@@ -1,0 +1,10 @@
+# Generated output (built at runtime)
+output/
+
+# Node
+node_modules/
+package-lock.json
+
+# OS
+.DS_Store
+Thumbs.db

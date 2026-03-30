@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>oh-my-hi</title>
+  <style>__STYLES__</style>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/billboard.js@3.18.0/dist/billboard.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/billboard.js@3.18.0/dist/theme/dark.min.css" id="bb-dark-theme" disabled>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="sidebar-logo" id="sidebar-logo" style="cursor:pointer">
+        <div class="sidebar-logo-main">
+          <span class="sidebar-logo-icon">👋</span>
+          <span class="sidebar-logo-text">oh-my-hi</span>
+        </div>
+        <div class="sidebar-logo-sub">
+          <span class="sidebar-logo-subtitle">Harness Insights</span>
+          <span class="sidebar-logo-version">v0.1.0</span>
+          <div class="lang-toggle-group" id="lang-toggle-group">
+            <button class="lang-btn" data-lang="en">EN</button>
+            <button class="lang-btn" data-lang="ko">KO</button>
+          </div>
+        </div>
+      </div>
+      <div class="sidebar-period" id="sidebar-period"></div>
+      <div class="sidebar-header">
+        <div class="sidebar-header-top">
+          <label class="scope-label" for="scope-select">Scope</label>
+        </div>
+        <select id="scope-select" class="scope-select" title=""></select>
+      </div>
+      <div class="sidebar-search">
+        <input type="text" id="search" placeholder="Search..." />
+      </div>
+      <nav class="sidebar-nav" id="sidebar-nav"></nav>
+    </aside>
+    <main class="content" id="content"></main>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/billboard.js@3.18.0/dist/billboard.min.js"></script>
+  <script>
+    let DATA = __DATA__;
+    let __LOCALE__ = __LOCALE_DATA__;
+    __APP_JS__
+  </script>
+</body>
+</html>
