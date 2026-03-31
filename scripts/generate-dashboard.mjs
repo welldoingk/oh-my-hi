@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import path from 'path';
 import fs from 'fs';
 import { execSync } from 'child_process';
+import { transformSync } from 'esbuild';
 
 import { parseSkills } from './parsers/skills.mjs';
 import { parseAgents } from './parsers/agents.mjs';
@@ -35,7 +36,7 @@ if (args.includes('--help')) {
 
 Usage:
   oh-my-hi                    Full build (index.html + data.json)
-  oh-my-hi --data-only        Data-only refresh (fast reload)
+  oh-my-hi --data-only        Regenerate data + web-ui (skip browser open)
   oh-my-hi --enable-auto      Enable auto data refresh on session end
   oh-my-hi --disable-auto     Disable auto data refresh
   oh-my-hi --status           Check auto-refresh status
@@ -180,8 +181,60 @@ async function main() {
   const safeJson = JSON.stringify(data);
   fs.writeFileSync(dataPath, safeJson, 'utf-8');
 
-  // 5b) Load locale for system language
+  // 5a-2) Minify usage data for inline HTML (key shortening + sessionId indexing)
+  const USAGE_KEY_MAP = {
+    timestamp: 'ts', model: 'm', inputTokens: 'it', outputTokens: 'ot',
+    cacheRead: 'cr', cacheCreation: 'cc', rawInput: 'ri', context: 'cx',
+    contextName: 'cn', sessionId: 'sid', latencyMs: 'ms', charLen: 'cl',
+    name: 'n', tool: 't', count: 'c', date: 'd', command: 'cmd', project: 'p',
+    messageCount: 'mc', sessionCount: 'sc', toolCallCount: 'tc',
+  };
+  function minifyUsageData(scopeDataObj) {
+    const result = {};
+    for (const [scope, sdata] of Object.entries(scopeDataObj)) {
+      const copy = { ...sdata };
+      if (copy.usage) {
+        const u = copy.usage;
+        // Build sessionId lookup table
+        const sidSet = new Set();
+        for (const arr of Object.values(u)) {
+          if (!Array.isArray(arr)) continue;
+          for (const item of arr) {
+            if (item.sessionId != null) sidSet.add(item.sessionId);
+          }
+        }
+        const sidList = [...sidSet];
+        const sidIndex = Object.fromEntries(sidList.map((s, i) => [s, i]));
+
+        // Shorten keys and replace sessionId with index
+        const minUsage = {};
+        for (const [field, arr] of Object.entries(u)) {
+          if (!Array.isArray(arr)) { minUsage[field] = arr; continue; }
+          minUsage[field] = arr.map(item => {
+            const obj = {};
+            for (const [k, v] of Object.entries(item)) {
+              if (k === 'sessionId') {
+                obj.sid = v != null ? sidIndex[v] : null;
+              } else {
+                obj[USAGE_KEY_MAP[k] || k] = v;
+              }
+            }
+            return obj;
+          });
+        }
+        minUsage._sidList = sidList;
+        copy.usage = minUsage;
+      }
+      result[scope] = copy;
+    }
+    return result;
+  }
+  const inlineData = { ...data, scopeData: minifyUsageData(data.scopeData), _minified: true };
+  const inlineJson = JSON.stringify(inlineData);
+
+  // 5b) Load locales
   const LOCALES_DIR = path.join(TEMPLATES, 'locales');
+  const enObj = JSON.parse(fs.readFileSync(path.join(LOCALES_DIR, 'en.json'), 'utf-8'));
   let localeObj = {};
   const localePath = path.join(LOCALES_DIR, systemLocale + '.json');
   if (systemLocale !== 'en' && fs.existsSync(localePath)) {
@@ -191,41 +244,49 @@ async function main() {
       console.log(`  locale: ${systemLocale} (${Object.keys(localeObj).length - 1} keys)`);
     } catch { /* fallback to English */ }
   }
-  // For unknown locales: generate English template file on first run
+  // For unknown locales: copy en.json as template on first run
   if (systemLocale !== 'en' && !fs.existsSync(localePath)) {
-    const enKeys = {};
-    const appSrc = fs.readFileSync(path.join(TEMPLATES, 'app.js'), 'utf-8');
-    const enMatch = appSrc.match(/I18N\.en\s*=\s*\{([\s\S]*?)\n  \};/);
-    if (enMatch) {
-      for (const line of enMatch[1].split('\n')) {
-        const m = line.match(/^\s*(\w+):\s*"(.*)"/);
-        if (m) enKeys[m[1]] = m[2];
-      }
-    }
     fs.mkdirSync(LOCALES_DIR, { recursive: true });
-    fs.writeFileSync(localePath, JSON.stringify(enKeys, null, 2), 'utf-8');
+    fs.writeFileSync(localePath, JSON.stringify(enObj, null, 2), 'utf-8');
     console.log(`  locale: created template ${localePath} (translate and rebuild)`);
   }
 
   // 5c) index.html — always regenerated (data is inlined for file:// compatibility)
   const template = fs.readFileSync(path.join(TEMPLATES, 'dashboard.html'), 'utf-8');
-  const styles = fs.readFileSync(path.join(TEMPLATES, 'styles.css'), 'utf-8');
+  const rawStyles = fs.readFileSync(path.join(TEMPLATES, 'styles.css'), 'utf-8');
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf-8'));
-  const appJs = fs.readFileSync(path.join(TEMPLATES, 'app.js'), 'utf-8')
+  const rawAppJs = fs.readFileSync(path.join(TEMPLATES, 'app.js'), 'utf-8')
     .replace(/__VERSION__/g, JSON.stringify(pkg.version));
+
+  // billboard.js (pkgd includes d3) + CSS
+  const bbDir = path.join(ROOT, 'node_modules', 'billboard.js', 'dist');
+  if (!fs.existsSync(bbDir)) {
+    console.error('oh-my-hi: ❌ node_modules not found. Run `npm install` in', ROOT);
+    process.exit(1);
+  }
+  const bbJs = fs.readFileSync(path.join(bbDir, 'billboard.pkgd.min.js'), 'utf-8');
+  const bbCss = fs.readFileSync(path.join(bbDir, 'billboard.min.css'), 'utf-8');
+  const bbDarkCss = fs.readFileSync(path.join(bbDir, 'theme', 'dark.min.css'), 'utf-8');
+
+  const styles = transformSync(rawStyles, { loader: 'css', minify: true }).code;
+  const appJs = transformSync(rawAppJs, { loader: 'js', minify: true }).code;
 
   const escapeForScript = (str) => str
     .replaceAll('</', String.raw`<\u002f`)
     .replaceAll('\u2028', String.raw`\u2028`)
     .replaceAll('\u2029', String.raw`\u2029`);
 
-  const escapedJson = escapeForScript(safeJson);
+  const escapedJson = escapeForScript(inlineJson);
   const escapedLocale = escapeForScript(JSON.stringify(localeObj));
 
   // Use a single-pass replacer to avoid cross-contamination when data payloads
   // contain placeholder-like strings (e.g. __LOCALE_DATA__ inside skill descriptions).
   const placeholders = {
+    __BB_CSS__: bbCss,
+    __BB_DARK_CSS_STR__: JSON.stringify(bbDarkCss),
+    __BB_JS__: bbJs,
     __STYLES__: styles,
+    __EN_DATA__: escapeForScript(JSON.stringify(enObj)),
     __LOCALE_DATA__: escapedLocale,
     __APP_JS__: appJs,
     __DATA__: escapedJson,
@@ -397,53 +458,18 @@ async function collectProjectData(configPath, projectPath) {
 /**
  * Build task categories by classifying contextNames into work types.
  *
- * Classification is persisted in task-categories.json:
- *  - Existing entries are preserved (user can edit the file to override).
- *  - New contextNames are auto-classified from their description at build time.
+ * Classification is auto-generated at every build:
+ *  - contextNames are classified from their description using keyword matching.
  *  - Built-in tools (context='tool') use a fixed structural mapping.
+ *  - Category labels come from locale files (taskCat_* keys).
  */
 const TASK_CAT_FILE = path.join(OUTPUT, 'task-categories.json');
 
-// Category schema — universal work types (fixed structure)
-const WORK_TYPE_META = {
-  'code-edit':   { icon: '✏️', ko: '코드 편집',       en: 'Code Editing' },
-  'code-search': { icon: '🔍', ko: '코드 탐색',       en: 'Code Search' },
-  'execution':   { icon: '▶️', ko: '실행 / 디버깅',    en: 'Execution & Debug' },
-  'review':      { icon: '🔎', ko: '코드 리뷰',       en: 'Code Review' },
-  'planning':    { icon: '📐', ko: '설계 / 계획',      en: 'Planning & Design' },
-  'docs':        { icon: '📝', ko: '문서 작성',        en: 'Documentation' },
-  'browser':     { icon: '🌐', ko: '브라우저',         en: 'Browser Automation' },
-  'workflow':    { icon: '⚙️', ko: '워크플로 자동화',    en: 'Workflow Automation' },
-  'team':        { icon: '👥', ko: '팀 관리',          en: 'Team Management' },
-  'config':      { icon: '🔧', ko: '설정 / 유지보수',   en: 'Config & Maintenance' },
-  'general':     { icon: '💬', ko: '일반 대화',        en: 'General' },
-  'other':       { icon: '📦', ko: '기타',            en: 'Other' },
-};
-
-// Built-in tool → category (structural, not user data)
-const TOOL_CATEGORY = {
-  Edit: 'code-edit', Write: 'code-edit', NotebookEdit: 'code-edit',
-  Read: 'code-search', Grep: 'code-search', Glob: 'code-search',
-  LSP: 'code-search', ToolSearch: 'code-search', Explore: 'code-search',
-  AskUserQuestion: 'code-search',
-  Bash: 'execution',
-  EnterPlanMode: 'planning', ExitPlanMode: 'planning', Plan: 'planning',
-  TaskCreate: 'planning', TaskUpdate: 'planning', TaskOutput: 'planning', TaskStop: 'planning',
-  TeamCreate: 'team', TeamDelete: 'team', SendMessage: 'team',
-  WebFetch: 'browser', WebSearch: 'browser',
-};
-
-// Category keyword seeds — used ONLY for auto-classifying new items
-const CAT_KEYWORDS = {
-  'review':   ['review', 'lint', 'simplif', '리뷰', '검수', '검토'],
-  'planning': ['plan', 'design', 'architect', 'brainstorm', '계획', '설계', '기획'],
-  'docs':     ['doc', 'report', 'meeting', 'wiki', 'publish', 'humaniz', 'summary', '문서', '회의', '보고', '정리', '요약', '작성', '기술공유', '기록'],
-  'browser':  ['browser', 'chrome', 'scrape', 'page', '브라우저'],
-  'workflow': ['workflow', 'n8n', 'cron', 'schedule', '자동화', '워크플로'],
-  'team':     ['team', 'leader', 'manager', '팀', '매니저'],
-  'config':   ['config', 'setting', 'setup', 'hook', 'plugin', 'health', 'improve', 'skill-creator', '설정', '개선'],
-  'execution':['debug', 'test', 'exec', 'build', 'implement', '디버그', '실행', '테스트', '구현'],
-};
+// Work types loaded from external file (categories, tool mapping, keywords)
+const WORK_TYPES = JSON.parse(fs.readFileSync(path.join(TEMPLATES, 'work-types.json'), 'utf-8'));
+const WORK_TYPE_META = WORK_TYPES.categories;
+const TOOL_CATEGORY = WORK_TYPES.toolMapping;
+const CAT_KEYWORDS = WORK_TYPES.keywords;
 
 function buildTaskCategories(scopeData) {
   // 1. Collect descriptions from harness data
@@ -457,13 +483,7 @@ function buildTaskCategories(scopeData) {
     }
   }
 
-  // 2. Load existing persistent mapping (user overrides preserved)
-  let persisted = {};
-  try {
-    persisted = JSON.parse(fs.readFileSync(TASK_CAT_FILE, 'utf-8'));
-  } catch { /* first run or missing file */ }
-
-  // 3. Collect all contextNames from token data
+  // 2. Collect all contextNames from token data
   const allNames = new Set();
   for (const sd of Object.values(scopeData)) {
     for (const e of (sd.usage?.tokenEntries || [])) {
@@ -471,7 +491,7 @@ function buildTaskCategories(scopeData) {
     }
   }
 
-  // 4. Auto-classify items not in persisted mapping
+  // 3. Auto-classify each contextName
   function autoClassify(name, contextType) {
     if (contextType === 'tool' && TOOL_CATEGORY[name]) return TOOL_CATEGORY[name];
     if (contextType === 'general') return 'general';
@@ -488,22 +508,17 @@ function buildTaskCategories(scopeData) {
     return bestCat || 'other';
   }
 
-  // 5. Build final mapping: persisted → auto-classified → tool mapping
+  // 4. Build mapping: auto-classify all contextNames
   const mapping = {};
   for (const sd of Object.values(scopeData)) {
     for (const e of (sd.usage?.tokenEntries || [])) {
       const name = e.contextName || 'conversation';
       if (mapping[name]) continue;
-
-      if (persisted[name]) {
-        mapping[name] = persisted[name];
-      } else {
-        mapping[name] = autoClassify(name, e.context || 'general');
-      }
+      mapping[name] = autoClassify(name, e.context || 'general');
     }
   }
 
-  // 6. Save updated mapping to file (user-editable)
+  // 5. Save mapping for reference
   const sorted = {};
   for (const key of Object.keys(mapping).sort()) sorted[key] = mapping[key];
   fs.writeFileSync(TASK_CAT_FILE, JSON.stringify(sorted, null, 2), 'utf-8');

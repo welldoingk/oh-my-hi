@@ -1,241 +1,69 @@
 'use strict';
 
+  // ── Restore minified usage data ──
+  if (typeof DATA !== 'undefined' && DATA._minified) {
+    const _KEY_REV = {
+      ts:'timestamp', m:'model', it:'inputTokens', ot:'outputTokens',
+      cr:'cacheRead', cc:'cacheCreation', ri:'rawInput', cx:'context',
+      cn:'contextName', sid:'sessionId', ms:'latencyMs', cl:'charLen',
+      n:'name', t:'tool', c:'count', d:'date', cmd:'command', p:'project',
+      mc:'messageCount', sc:'sessionCount', tc:'toolCallCount'
+    };
+    for (const _scope in DATA.scopeData) {
+      const _u = DATA.scopeData[_scope].usage;
+      if (!_u) continue;
+      const _sidList = _u._sidList || [];
+      delete _u._sidList;
+      for (const _field in _u) {
+        if (!Array.isArray(_u[_field])) continue;
+        _u[_field] = _u[_field].map((item) => {
+          const obj = {};
+          for (const k in item) {
+            const rk = _KEY_REV[k] || k;
+            if (rk === 'sessionId') { obj[rk] = item[k] != null ? _sidList[item[k]] : null; }
+            else { obj[rk] = item[k]; }
+          }
+          return obj;
+        });
+      }
+    }
+    delete DATA._minified;
+  }
+
   // ── i18n ──
-  // Base: English (hardcoded). Locale: injected at build time via __LOCALE__.
+  // All locales (en + system locale) injected at build time.
   const I18N = {};
   if (typeof __LOCALE__ !== 'undefined' && __LOCALE__._lang) {
     I18N[__LOCALE__._lang] = __LOCALE__;
   }
-  I18N.en = {
-    configFilesLabel: "Config Files",
-    viewOfficialDocs: "View official docs",
-    overview: "Harness",
-    overviewTitle: "Harness: Overview",
-    structure: "Structure",
-    tokens: "Tokens",
-    tokensTitle: "Tokens: Overview",
-    tokensDesc: "Token usage across all responses including skills, agents, etc. (transcript-based, collected since first Claude Code session)",
-    tokenActivity: "Token Activity",
-    tokenActivityDesc: "Daily total token usage heatmap",
-    tokenUnit: "tokens",
-    totalTokens: "Total Tokens",
-    inputTokens: "Input Tokens",
-    outputTokens: "Output Tokens",
-    cacheTokens: "Cache Tokens",
-    estimatedCost: "Estimated Cost",
-    totalCost: "Total Cost",
-    dailyAvgCost: "Daily Avg Cost",
-    costFormula: "Cost Calculation",
-    costFormulaDesc: "Reference cost converted at Anthropic API token pricing (per 1M tokens, USD). Claude Code CLI is subscription-based (Pro/Max/Team/Enterprise) and not billed per token — this estimate is unrelated to actual subscription charges.",
-    costFormulaDetail: "Cost = (Input × input price + Output × output price + Cache Read × cache read price + Cache Write × cache write price) ÷ 1,000,000",
-    costPricingTable: "Model Pricing Table (per 1M tokens)",
-    costCardNote: "Based on Anthropic API token pricing (<span style='color:#e74c3c'>not actual CLI subscription billing</span>)",
-    costPricingUnit: "USD per 1M tokens",
-    tokenTrend: "Daily Token Usage",
-    modelDist: "Model Distribution",
-    tokenByModel: "Token Usage by Model",
-    tokenByContext: "Token Usage by Tool",
-    tokenByContextDesc: "Tokens attributed to the most recently active individual skill, agent, or tool",
-    tokenInsights: "Token Insights",
-    tokenAnalysis: "Analysis",
-    tokenActivityPage: "Activity Log",
-    taskCategory: "Tokens by Task Category",
-    taskCategoryDesc: "Token usage grouped into higher-level task categories from skills, agents, and tools",
-    promptStats: "Prompt Statistics",
-    responseLatency: "Response Latency",
-    responseLatencyDesc: "Time from prompt submission to first response (human→assistant interval)",
-    avgLatency: "Avg Response Time",
-    medianLatency: "Median (P50)",
-    p95Latency: "95th Percentile (P95)",
-    maxLatency: "Max",
-    sessionAnalysis: "Session Analysis",
-    sessionAnalysisDesc: "Messages per session and duration",
-    totalSessions: "Total Sessions",
-    avgSessionDuration: "Avg Session Duration",
-    avgMsgPerSession: "Avg Messages/Session",
-    longestSession: "Longest Session",
-    hourlyDist: "Hourly Token Distribution",
-    hourlyDistDesc: "Token usage by hour of day (24h)",
-    cacheEfficiency: "Cache Efficiency",
-    cacheEfficiencyDesc: "Cache composition of input tokens",
-    freshInput: "Fresh Input",
-    cacheRead: "Cache Read",
-    cacheCreation: "Cache Creation",
-    cacheHitRate: "Cache Hit Rate",
-    promptStatsDesc: "User input prompt length and frequency analysis (estimated by character count)",
-    avgPromptLen: "Avg Prompt Length",
-    totalPrompts: "Total Prompts",
-    shortPrompts: "Short (≤100 chars)",
-    longPrompts: "Long (≥500 chars)",
-    chars: " chars",
-    scopeLabel: "Workspace",
-    searchPlaceholder: "Search...",
-    catConfigFiles: "Config Files",
-    catSkills: "Skills",
-    catAgents: "Agents",
-    catPlugins: "Plugins",
-    catHooks: "Hooks",
-    catMemory: "Memory",
-    catMcpServers: "MCP Servers",
-    catRules: "Rules",
-    catPrinciples: "Principles",
-    catCommands: "Commands",
-    catTeams: "Teams",
-    catPlans: "Plans",
-    catTodos: "Tasks",
-    totalUsage: "Total Usage",
-    skillCalls: "Skill Calls",
-    agentCalls: "Agent Calls",
-    commands: "Commands",
-    popularSkills: "Popular Skills",
-    recent: "Recent",
-    activity: "Activity",
-    activityDesc: "Daily activity combining skills, agents, commands, and MCP calls (transcript-based, collected since first Claude Code session)",
-    unusedItems: "Unused Items",
-    unusedCriteria: "0 calls in selected period",
-    generatedAt: "Generated at",
-    calls: "calls",
-    never: "Never",
-    noItems: "No {0} found in this scope",
-    itemsIn: "{0} items in {1}",
-    vsPrevPeriod: "% vs prev period",
-    less: "Less",
-    more: "More",
-    description: "Description",
-    content: "Content",
-    configuration: "Configuration",
-    serverConfig: "Server Configuration",
-    envKeys: "Environment Keys",
-    includedSkills: "Included Skills",
-    allowedTools: "Allowed Tools",
-    argumentHint: "Argument Hint",
-    script: "Script",
-    noContent: "No content available",
-    flowOutput: "Output",
-    configPathLabel: "Path",
-    periodRangeLabel: "Period",
-    dailyTrend: "Daily Usage Trend",
-    dailyTrendDesc: "Total daily calls combining skills, agents, and commands",
-    categoryDist: "Harness Composition",
-    insights: "Insights & Recommendations",
-    mostActiveSkill: "Most active skill: {0} ({1} calls)",
-    unusedAgentRec: "Unused agent for {0} days: {1} — consider removing",
-    peakHour: "Peak skill usage hours: {0}",
-    mostActiveAgent: "Most active agent: {0} ({1} calls)",
-    noUsageData: "No usage data available",
-    insightUsagePatternTitle: "Usage Pattern",
-    insightUnusedCleanupTitle: "Unused Items Cleanup",
-    insightEfficiencyTitle: "Efficiency Suggestion",
-    insightTimeTitle: "Time Analysis",
-    insightPluginTitle: "Harness Configuration",
-    insightMemoryTitle: "Memory Management",
-    insightTopAgentTitle: "Agent Utilization",
-    categoryOverview: "{0} Overview",
-    topUsed: "Top Used",
-    recentlyUsed: "Recently Used",
-    unused: "Unused",
-    allItems: "All Items",
-    totalCount: "Total Count",
-    periodUsage: "Period Usage",
-    usedCount: "Used",
-    unusedCount: "Unused",
-    flowTitle: "Component Flow",
-    flowSubtext: "How a user prompt flows through the harness",
-    flowUserPrompt: "User Prompt",
-    flowClaudeMd: "CLAUDE.md",
-    flowRulesPrinciples: "Rules / Principles",
-    flowHooks: "Hooks",
-    flowSkillsAgents: "Skills / Agents",
-    flowMcpServers: "MCP Servers",
-    fileTree: "File Tree",
-    fileTreeSub: "File tree of the harness configuration",
-    structureSub: "Component interaction flow and file tree",
-    langLabel: "🌐",
-    all: "All",
-    custom: "Custom",
-    calendarTitle: "Select Date Range",
-    calendarApply: "Apply",
-    calendarCancel: "Cancel",
-    command: "Command",
-    skill: "Skill",
-    agent: "Agent",
-    rank: "#{0}",
-    justNow: "Just now",
-    minutesAgo: "{0}m ago",
-    hoursAgo: "{0}h ago",
-    daysAgo: "{0}d ago",
-    monthsAgo: "{0}mo ago",
-    yearsAgo: "{0}y ago",
-    activities: "activities",
-    help: "Help",
-    helpTitle: "Help",
-    helpUsage: "Usage",
-    helpUsageDesc: "Generate the dashboard via the /omh skill.",
-    helpUpdate: "Update",
-    helpUpdateDesc: "To update to the latest version, run the same install command:",
-    helpUpdateCli: "From the command line",
-    helpUpdateSession: "Claude Code (in-session)",
-    helpParams: "Parameters",
-    helpParamDefault: "Parse and generate data, build web-ui, then open automatically in browser",
-    helpParamDataOnly: "Regenerate data + web-ui without opening a new browser tab.<br>💡 If you've bookmarked the generated local file, just refresh the page to see the latest data.",
-    helpParamEnableAuto: "Auto-rebuild data+web-ui on every session end (registers Stop hook).<br>💡 Once enabled, you don't need to run /omh or --data-only manually — just refresh the bookmarked page to see the latest data.",
-    helpParamDisableAuto: "Disable auto-rebuild (removes Stop hook)",
-    helpParamStatus: "Check auto-refresh hook status",
-    helpParamPaths: "Build with only the specified project paths",
-    helpDataSources: "Data Parsing Reference",
-    helpConfigFiles: "Config Files",
-    helpConfigFilesDesc: "Reads CLAUDE.md, AGENTS.md (global/project), settings.json, and settings.local.json. Extracts content and statistics.",
-    helpSkills: "Skills",
-    helpSkillsDesc: "Parses {{configDir}}/skills/*/SKILL.md and plugins/cache/**/SKILL.md. Extracts name, description, version, argument-hint, allowed-tools from YAML frontmatter. Local skills take priority over plugin skills with the same name.",
-    helpAgents: "Agents",
-    helpAgentsDesc: "Parses {{configDir}}/agents/*.md. Extracts name, description, model from frontmatter. changelog.md is excluded.",
-    helpPlugins: "Plugins",
-    helpPluginsDesc: "Reads installed plugin list from plugins/installed_plugins.json. Checks enabled status via enabledPlugins in settings.json. Looks up author info from marketplace.json.",
-    helpHooks: "Hooks",
-    helpHooksDesc: "Parses the hooks section of settings.json. Groups by event (PreToolUse, PostToolUse, Stop, etc.) and matcher, then aggregates commands.",
-    helpMemory: "Memory",
-    helpMemoryDesc: "Parses {{configDir}}/projects/*/memory/*.md. Extracts name, description, type from frontmatter. MEMORY.md (index file) is excluded.",
-    helpMcpServers: "MCP Servers",
-    helpMcpServersDesc: "Reads mcpServers from .claude.json and mcp.json. Environment variable values are masked (***) for security; only key names are exposed.",
-    helpRules: "Rules & Principles",
-    helpRulesDesc: "Reads {{configDir}}/rules/*.md and principles/*.md. Treats entire file content as body without frontmatter parsing.",
-    helpScopes: "Scopes (Workspaces)",
-    helpScopesDesc: "Global scope (default) + auto-detected from projects/ subdirectories. Extracts the cwd field from .jsonl files to find actual project paths. Paths that no longer exist are filtered out.",
-    helpTokens: "Token Usage",
-    helpTokensDesc: "Parses projects/*/*.jsonl (transcripts). Extracts input/output/cache tokens from assistant message usage fields. Attributed by model, session, and active context (skill/agent/MCP/tool).",
-    helpPromptStats: "Prompt Statistics",
-    helpPromptStatsDesc: "Estimates character count (charLen) of human messages from transcripts. Calculates short (≤100 chars) and long (≥500 chars) prompt ratios.",
-    helpLatency: "Response Latency",
-    helpLatencyDesc: "Measures time difference between human→assistant messages. Only 0–600,000ms (10 min) range is valid. Tracked per session.",
-    helpActivity: "Activity Heatmap",
-    helpActivityDesc: "Aggregates skill/agent/command/MCP calls by day and visualizes as a heatmap.",
-    helpCommands: "Command History",
-    helpCommandsDesc: "Extracts user commands starting with / from history.jsonl. Built-in commands (clear, help, model, etc. — 20 types) and file paths are excluded.",
-    helpCustomCommands: "Commands",
-    helpCustomCommandsDesc: "Parses {{configDir}}/commands/*.md. Extracts description and allowed-tools from frontmatter.",
-    helpTeams: "Teams",
-    helpTeamsDesc: "Parses {{configDir}}/teams/*/config.json. Extracts team name, description, and member count.",
-    helpPlans: "Plans",
-    helpPlansDesc: "Parses {{configDir}}/plans/*.md. Lists execution plan documents by filename.",
-    helpTodos: "Tasks",
-    helpTodosDesc: "Parses {{configDir}}/todos/*.json. Aggregates total/pending/completed task counts.",
-  };
+  I18N.en = (typeof __EN__ !== 'undefined') ? __EN__ : {};
 
   const systemLocale = (DATA.systemLocale || 'en').substring(0, 2);
   let currentLang = localStorage.getItem('harness-lang') || (I18N[systemLocale] ? systemLocale : 'en');
 
   // ── Dark mode ──
+  function setBbDarkTheme(enabled) {
+    let el = document.getElementById('bb-dark-theme');
+    if (enabled && !el) {
+      el = document.createElement('style');
+      el.id = 'bb-dark-theme';
+      el.textContent = typeof __BB_DARK_CSS__ === 'string' ? __BB_DARK_CSS__ : '';
+      document.head.appendChild(el);
+    } else if (!enabled && el) {
+      el.remove();
+    }
+  }
+
   (function initTheme() {
     let theme = localStorage.getItem('harness-theme') || 'light';
     if (theme === 'dark') {
       document.body.classList.add('dark');
-      let bbDark = document.getElementById('bb-dark-theme');
-      if (bbDark) bbDark.disabled = false;
+      setBbDarkTheme(true);
     }
   })();
 
   function t(key) {
-    const args = Array.prototype.slice.call(arguments, 1);
+    const args = Array.from(arguments).slice(1);
     let str = (I18N[currentLang] && I18N[currentLang][key]) || (I18N.en[key]) || key;
     args.forEach((a, i) => { str = str.replace('{' + i + '}', a); });
     if (str.indexOf('{{') !== -1) {
@@ -312,8 +140,7 @@
       localStorage.setItem('harness-theme', isDark ? 'dark' : 'light');
       themeBtn.textContent = isDark ? '☀️' : '🌙';
       // Toggle billboard.js dark theme
-      const bbDark = document.getElementById('bb-dark-theme');
-      if (bbDark) bbDark.disabled = !isDark;
+      setBbDarkTheme(isDark);
       // Re-render while preserving scroll position
       const scrollPos = content.scrollTop;
       skipScrollReset = true;
@@ -648,9 +475,7 @@
   }
 
   function fmtChartTooltipTitle(d) {
-    let dayNames = currentLang === 'ko'
-      ? ['일', '월', '화', '수', '목', '금', '토']
-      : ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    let dayNames = t('dayNames').split(',');
     return d.getFullYear() + '.' + String(d.getMonth() + 1).padStart(2, '0') + '.' + String(d.getDate()).padStart(2, '0')
       + ' (' + dayNames[d.getDay()] + ')';
   }
@@ -715,13 +540,13 @@
   }
 
   /** Format number with Intl.NumberFormat */
-  let _numFmt = new Intl.NumberFormat(currentLang === 'ko' ? 'ko-KR' : 'en-US');
+  let _numFmt = new Intl.NumberFormat(t('numLocale'));
   function fmtNum(n) {
     if (typeof n !== 'number') return String(n);
     return _numFmt.format(n);
   }
   function updateNumFmt() {
-    _numFmt = new Intl.NumberFormat(currentLang === 'ko' ? 'ko-KR' : 'en-US');
+    _numFmt = new Intl.NumberFormat(t('numLocale'));
   }
 
   /** Format large number compactly (e.g., 10.2k) for donut center */
@@ -1037,12 +862,8 @@
       const month = viewMonth.getMonth();
       const daysInMonth = new Date(year, month + 1, 0).getDate();
       const firstDay = new Date(year, month, 1).getDay();
-      const monthNames = currentLang === 'ko'
-        ? ['1월', '2월', '3월', '4월', '5월', '6월', '7월', '8월', '9월', '10월', '11월', '12월']
-        : ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-      const dayNames = currentLang === 'ko'
-        ? ['일', '월', '화', '수', '목', '금', '토']
-        : ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+      const monthNames = t('monthNames').split(',');
+      const dayNames = t('dayNamesShort').split(',');
 
       let html = '<div class="calendar-popup">'
         + '<div class="calendar-header-bar">'
@@ -1222,7 +1043,7 @@
     html += '<div style="margin-top:16px;margin-bottom:4px;font-size:13px;color:var(--text-secondary)">' + t('costCardNote') + '</div>'
       + '<div class="card-grid">'
       + statCard(t('totalCost'), fmtCost(totalCost), changeCost, { raw: true })
-      + statCard(t('dailyAvgCost'), fmtCost(dailyAvgCost), null, { raw: true, badge: (currentLang === 'ko' ? '활동 ' : '') + costDays + (currentLang === 'ko' ? '일 기준' : ' active days') });
+      + statCard(t('dailyAvgCost'), fmtCost(dailyAvgCost), null, { raw: true, badge: t('activeDaysBadge', costDays) });
     modelsByCost.slice(0, 3).forEach((entry) => {
       if (entry[1].cost > 0) {
         const pct = totalCost > 0 ? Math.round((entry[1].cost / totalCost) * 100) : 0;
@@ -1241,8 +1062,8 @@
       + '<details><summary style="cursor:pointer;font-size:13px;font-weight:600;margin-bottom:8px">' + t('costPricingTable') + '</summary>'
       + '<table class="config-table" style="width:100%;margin-top:8px">'
       + '<thead><tr><th>Model</th><th style="text-align:right">Input</th><th style="text-align:right">Output</th><th style="text-align:right">Cache Read</th><th style="text-align:right">Cache Write</th></tr></thead><tbody>';
-    Object.entries(MODEL_PRICING).forEach(function(entry) {
-      var p = entry[1];
+    Object.entries(MODEL_PRICING).forEach((entry) => {
+      const p = entry[1];
       html += '<tr><td><strong>' + entry[0] + '</strong></td>'
         + '<td style="text-align:right">$' + p.input + '</td>'
         + '<td style="text-align:right">$' + p.output + '</td>'
@@ -1318,7 +1139,6 @@
     const days = customDateRange ? 0 : currentPeriod;
     const tokenEntries = filterByPeriod(usage.tokenEntries || [], 'timestamp', days);
     const promptEntries = filterByPeriod(usage.promptStats || [], 'timestamp', days);
-    const ko = currentLang === 'ko';
 
     let html = '<div class="page-header">'
       + '<h1>📋 ' + t('tokenAnalysis') + '</h1>'
@@ -1373,7 +1193,7 @@
       html += '<div class="section"><div class="section-title">' + t('promptStats') + ' <span class="section-title-sub">' + t('promptStatsDesc') + '</span></div>'
         + '<div class="card-grid">'
         + statCard(t('totalPrompts'), totalPrompts, null, { si: true })
-        + statCard(t('avgPromptLen'), fmtNum(avgLen) + (ko ? '자' : ' chars'), null)
+        + statCard(t('avgPromptLen'), fmtNum(avgLen) + t('unitChars'), null)
         + statCard(t('shortPrompts'), fmtNum(shortCount), null, { badge: shortPct + '%', badgeColor: 'teal' })
         + statCard(t('longPrompts'), fmtNum(longCount), null, { badge: longPct + '%', badgeColor: 'teal' })
         + '</div></div>';
@@ -1387,7 +1207,7 @@
       const median = latencies[Math.floor(latencies.length / 2)];
       const p95 = latencies[Math.floor(latencies.length * 0.95)];
       const max = latencies[latencies.length - 1];
-      const fmtMs = (ms) => ms >= 60000 ? (ms / 60000).toFixed(1) + (ko ? '분' : 'm') : ms >= 1000 ? (ms / 1000).toFixed(1) + 's' : ms + 'ms';
+      const fmtMs = (ms) => ms >= 60000 ? (ms / 60000).toFixed(1) + t('unitMin') : ms >= 1000 ? (ms / 1000).toFixed(1) + 's' : ms + 'ms';
 
       html += '<div class="section"><div class="section-title">' + t('responseLatency') + ' <span class="section-title-sub">' + t('responseLatencyDesc') + '</span></div>'
         + '<div class="card-grid">'
@@ -1415,7 +1235,7 @@
       const avgMsg = Math.round(sessions.reduce((s, v) => s + v.count, 0) / totalSessions);
       const avgDur = durations.length > 0 ? Math.round(durations.reduce((s, v) => s + v, 0) / durations.length) : 0;
       const maxDur = durations.length > 0 ? Math.max(...durations) : 0;
-      const fmtDur = (ms) => ms >= 3600000 ? (ms / 3600000).toFixed(1) + (ko ? '시간' : 'h') : ms >= 60000 ? (ms / 60000).toFixed(0) + (ko ? '분' : 'm') : (ms / 1000).toFixed(0) + 's';
+      const fmtDur = (ms) => ms >= 3600000 ? (ms / 3600000).toFixed(1) + t('unitHour') : ms >= 60000 ? (ms / 60000).toFixed(0) + t('unitMin') : (ms / 1000).toFixed(0) + 's';
 
       html += '<div class="section"><div class="section-title">' + t('sessionAnalysis') + ' <span class="section-title-sub">' + t('sessionAnalysisDesc') + '</span></div>'
         + '<div class="card-grid">'
@@ -1457,8 +1277,8 @@
 
     // Draw charts
     drawRotatedBar('#task-cat-bar', taskCatEntries.map((e) => {
-      const meta = taskCatMeta[e[0]] || taskCatMeta['other'] || { icon: '📦', ko: e[0], en: e[0] };
-      return { label: meta.icon + ' ' + (ko ? meta.ko : meta.en), value: e[1].tokens };
+      const meta = taskCatMeta[e[0]] || taskCatMeta['other'] || { icon: '📦', label: e[0] };
+      return { label: meta.icon + ' ' + (meta.label || e[0]), value: e[1].tokens };
     }));
     drawRotatedBar('#tool-ctx-bar', contextEntries.map((e) => {
       return { label: e[0], value: e[1].tokens };
@@ -1478,7 +1298,7 @@
       }
     });
 
-    const categories = Array.from({ length: 24 }, (_, i) => i + (ko ? '시' : 'h'));
+    const categories = Array.from({ length: 24 }, (_, i) => i + t('unitHourSuffix'));
     const values = ['tokens'].concat(hourTokens);
 
     bb.generate({
@@ -1595,7 +1415,6 @@
 
   function renderTokenInsights(tokenEntries, modelMap, days) {
     if (tokenEntries.length === 0) return '';
-    const ko = currentLang === 'ko';
     const insights = [];
 
     // Totals
@@ -1615,33 +1434,23 @@
       const cacheRate = Math.round((totalCacheRead / totalInput) * 100);
       const creationRate = Math.round((totalCacheCreation / totalInput) * 100);
       const freshRate = Math.round((totalRawInput / totalInput) * 100);
-      let detail = ko
-        ? '전체 Input 중 캐시 읽기 ' + cacheRate + '%, 캐시 생성 ' + creationRate + '%, 신규 입력 ' + freshRate + '%.'
-        : 'Of total input: cache read ' + cacheRate + '%, cache creation ' + creationRate + '%, fresh input ' + freshRate + '%.';
+      let detail = t('insightCacheDetail', cacheRate, creationRate, freshRate);
       if (cacheRate > 70) {
-        detail += '\n' + (ko
-          ? '캐시 히트율이 높아 비용 효율이 우수합니다.'
-          : 'High cache hit rate indicates excellent cost efficiency.');
+        detail += '\n' + t('insightCacheHighHit');
       } else if (cacheRate < 30) {
-        detail += '\n' + (ko
-          ? '캐시 히트율이 낮습니다. 대화가 짧거나 컨텍스트가 자주 변경되는 패턴일 수 있습니다.'
-          : 'Low cache hit rate. Conversations may be short or context changes frequently.');
+        detail += '\n' + t('insightCacheLowHit');
       }
-      insights.push({ icon: '💰', title: ko ? '캐시 효율성' : 'Cache Efficiency', detail: detail });
+      insights.push({ icon: '💰', title: t('insightCacheTitle'), detail: detail });
     }
 
     // 2. Output/Input ratio
     if (totalRawInput > 0) {
       const ratio = (totalOutput / totalRawInput).toFixed(1);
-      let detail = ko
-        ? '신규 입력 대비 출력 비율: ' + ratio + 'x (Input ' + fmtCompact(totalRawInput) + ' → Output ' + fmtCompact(totalOutput) + ').'
-        : 'Output to fresh input ratio: ' + ratio + 'x (Input ' + fmtCompact(totalRawInput) + ' → Output ' + fmtCompact(totalOutput) + ').';
+      let detail = t('insightRespDetail', ratio, fmtCompact(totalRawInput), fmtCompact(totalOutput));
       if (parseFloat(ratio) > 5) {
-        detail += '\n' + (ko
-          ? '출력 비율이 높습니다. 코드 생성이나 긴 응답이 많은 패턴입니다.'
-          : 'High output ratio. Pattern indicates frequent code generation or lengthy responses.');
+        detail += '\n' + t('insightRespHighRatio');
       }
-      insights.push({ icon: '📊', title: ko ? '응답 효율' : 'Response Efficiency', detail: detail });
+      insights.push({ icon: '📊', title: t('insightRespTitle'), detail: detail });
     }
 
     // 3. Primary model
@@ -1652,17 +1461,15 @@
       const top = modelEntries[0];
       const topTotal = top[1].input + top[1].output + top[1].cache;
       const topPct = totalAll > 0 ? Math.round((topTotal / totalAll) * 100) : 0;
-      let detail = ko
-        ? '주력 모델: ' + top[0] + ' (전체의 ' + topPct + '%, ' + fmtCompact(topTotal) + ' 토큰).'
-        : 'Primary model: ' + top[0] + ' (' + topPct + '% of total, ' + fmtCompact(topTotal) + ' tokens).';
+      let detail = t('insightModelDetail', top[0], topPct, fmtCompact(topTotal));
       if (modelEntries.length > 1) {
         const others = modelEntries.slice(1).map((e) => {
           const t2 = e[1].input + e[1].output + e[1].cache;
           return e[0] + ' ' + fmtCompact(t2);
         }).join(', ');
-        detail += '\n' + (ko ? '기타: ' : 'Others: ') + others;
+        detail += '\n' + t('insightModelOthers', others);
       }
-      insights.push({ icon: '🤖', title: ko ? '모델 사용 분석' : 'Model Usage', detail: detail });
+      insights.push({ icon: '🤖', title: t('insightModelTitle'), detail: detail });
     }
 
     // 3b. Cost breakdown
@@ -1670,11 +1477,9 @@
     tokenEntries.forEach((e) => { totalCostInsight += calcEntryCost(e); });
     if (totalCostInsight > 0) {
       const costByModel = modelEntries.map((e) => e[0] + ' ' + fmtCost(e[1].cost || 0)).join(', ');
-      let detail = ko
-        ? '총 예상 비용: ' + fmtCost(totalCostInsight) + ' (Anthropic 공식 가격 기준).'
-        : 'Total estimated cost: ' + fmtCost(totalCostInsight) + ' (based on Anthropic official pricing).';
-      detail += '\n' + (ko ? '모델별: ' : 'By model: ') + costByModel;
-      insights.push({ icon: '💵', title: ko ? '비용 분석' : 'Cost Breakdown', detail: detail });
+      let detail = t('insightCostDetail', fmtCost(totalCostInsight));
+      detail += '\n' + t('insightCostByModel', costByModel);
+      insights.push({ icon: '💵', title: t('insightCostTitle'), detail: detail });
     }
 
     // 4. Daily average, peak, day-of-week, peak hours
@@ -1699,47 +1504,33 @@
       const peak = dailyValues.sort((a, b) => b[1] - a[1])[0];
 
       // Day of week
-      const dowNames = ko
-        ? ['일', '월', '화', '수', '목', '금', '토']
-        : ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+      const dowNames = t('dayNames').split(',');
       const maxDow = dowTokens.indexOf(Math.max(...dowTokens));
 
       // Peak hours
       const maxHourVal = Math.max(...hourTokens);
       const peakHours = [];
       hourTokens.forEach((v, h) => { if (v >= maxHourVal * 0.7 && v > 0) peakHours.push(h); });
-      const fmtH = (h) => ko
-        ? (h < 12 ? '오전 ' : '오후 ') + (h === 0 ? 12 : h <= 12 ? h : h - 12) + '시'
-        : h + ':00';
+      const fmtH = (h) => t('amPrefix') || t('pmPrefix') ? (h < 12 ? t('amPrefix') : t('pmPrefix')) + (h === 0 ? 12 : h <= 12 ? h : h - 12) + t('unitHourSuffix') : h + ':00';
       const peakHourStr = peakHours.length <= 3
         ? peakHours.map(fmtH).join(', ')
         : fmtH(peakHours[0]) + '–' + fmtH(peakHours[peakHours.length - 1]);
 
-      let detail = ko
-        ? '활동일 ' + fmtNum(totalDays) + '일, 일평균 ' + fmtCompact(dailyAvg) + ' 토큰.'
-        : fmtNum(totalDays) + ' active days, daily avg ' + fmtCompact(dailyAvg) + ' tokens.';
-      detail += '\n' + (ko
-        ? '피크: ' + peak[0] + ' (' + fmtCompact(peak[1]) + ' 토큰)'
-        : 'Peak: ' + peak[0] + ' (' + fmtCompact(peak[1]) + ' tokens)');
-      detail += '\n' + (ko
-        ? '요일별: ' + dowNames[maxDow] + '요일에 가장 많이 사용 (' + fmtCompact(dowTokens[maxDow]) + ' 토큰). 시간대: ' + peakHourStr + '에 집중.'
-        : 'Busiest day: ' + dowNames[maxDow] + ' (' + fmtCompact(dowTokens[maxDow]) + ' tokens). Peak hours: ' + peakHourStr + '.');
-      insights.push({ icon: '📈', title: ko ? '일별 사용 패턴' : 'Daily Pattern', detail: detail });
+      let detail = t('insightDailyDetail', fmtNum(totalDays), fmtCompact(dailyAvg));
+      detail += '\n' + t('insightDailyPeak', peak[0], fmtCompact(peak[1]));
+      detail += '\n' + t('insightDailyDow', dowNames[maxDow], fmtCompact(dowTokens[maxDow]), peakHourStr);
+      insights.push({ icon: '📈', title: t('insightDailyTitle'), detail: detail });
     }
 
     // 5. Requests count & avg tokens per request
     const reqCount = tokenEntries.length;
     if (reqCount > 0) {
       const avgPerReq = Math.round(totalAll / reqCount);
-      let detail = ko
-        ? '총 ' + fmtNum(reqCount) + '회 요청, 요청당 평균 ' + fmtCompact(avgPerReq) + ' 토큰.'
-        : fmtNum(reqCount) + ' total requests, avg ' + fmtCompact(avgPerReq) + ' tokens per request.';
+      let detail = t('insightReqDetail', fmtNum(reqCount), fmtCompact(avgPerReq));
       if (avgPerReq > 50000) {
-        detail += '\n' + (ko
-          ? '요청당 토큰이 큽니다. 긴 컨텍스트를 포함한 작업이 많은 패턴입니다.'
-          : 'High tokens per request. Pattern suggests tasks with large context windows.');
+        detail += '\n' + t('insightReqHighTokens');
       }
-      insights.push({ icon: '🔢', title: ko ? '요청 분석' : 'Request Analysis', detail: detail });
+      insights.push({ icon: '🔢', title: t('insightReqTitle'), detail: detail });
     }
 
     if (insights.length === 0) return '';
@@ -1907,14 +1698,14 @@
       donut: {
         title: fmtCompact(total),
         label: {
-          format: function (value, ratio) { return Math.round(ratio * 100) + '%'; },
+          format: (value, ratio) => { return Math.round(ratio * 100) + '%'; },
           ratio: 1.0
         },
         width: 51
       },
       tooltip: {
         format: {
-          value: function (value, ratio) { return fmtCompact(value) + ' (' + Math.round(ratio * 100) + '%)'; }
+          value: (value, ratio) => { return fmtCompact(value) + ' (' + Math.round(ratio * 100) + '%)'; }
         }
       },
       legend: { position: 'bottom' },
@@ -2142,7 +1933,7 @@
           padding: { bottom: 0 },
           tick: {
             count: 5,
-            format: function (v) { return Math.round(v); }
+            format: (v) => { return Math.round(v); }
           }
         }
       },
@@ -2180,7 +1971,7 @@
       if (count === 0) return;
       total += count;
       columns.push([getCatLabel(cat), count]);
-      // resolve CSS var color
+      // resolve CSS let color
       let color = cat.color;
       if (color && color.startsWith('var(')) {
         tempEl.style.color = color;
@@ -2205,16 +1996,14 @@
       donut: {
         title: fmtCompact(total),
         label: {
-          format: function (value, ratio) { return Math.round(ratio * 100) + '%'; },
+          format: (value, ratio) => { return Math.round(ratio * 100) + '%'; },
           ratio: 1.0
         },
         width: 51
       },
       tooltip: {
         format: {
-          value: function (value, ratio) {
-            return fmtNum(value) + ' (' + Math.round(ratio * 100) + '%)';
-          }
+          value: (value, ratio) => { return fmtNum(value) + ' (' + Math.round(ratio * 100) + '%)'; }
         }
       },
       legend: { position: 'bottom' },
@@ -2226,7 +2015,6 @@
   function renderInsights(usage, days, unusedAgents) {
     const insights = [];
     let sd = getScopeData();
-    let ko = currentLang === 'ko';
     const allItems = [].concat(usage.skills || [], usage.agents || [], usage.commands || []);
     if (allItems.length === 0) return '';
 
@@ -2238,7 +2026,7 @@
     allSkillDefs.forEach((s) => { skillDefMap[s.name] = s; });
 
     function fmtHour(h) {
-      if (ko) return (h < 12 ? '오전 ' : '오후 ') + (h === 0 ? 12 : h <= 12 ? h : h - 12) + '시';
+      if (t('amPrefix') || t('pmPrefix')) return (h < 12 ? t('amPrefix') : t('pmPrefix')) + (h === 0 ? 12 : h <= 12 ? h : h - 12) + t('unitHourSuffix');
       return h + ':00';
     }
 
@@ -2262,17 +2050,12 @@
       let usedCount = sortedSkills.length;
       const totalCount = allSkillDefs.length;
 
-      let detail = (ko ? '상위 스킬: ' : 'Top skills: ')
-        + top3.map((p) => { return p[0] + ' (' + fmtNum(p[1]) + (ko ? '회' : '') + ')'; }).join(', ') + '.';
+      let detail = t('insightTopSkills', top3.map((p) => { return p[0] + ' (' + fmtNum(p[1]) + t('unitCallCount') + ')'; }).join(', '));
 
       if (!hasHint && top3[0][1] >= 5) {
-        detail += '\n' + (ko
-          ? top3[0][0] + '에 argument-hint가 없습니다. frontmatter에 argument-hint를 추가하면 사용자에게 인자 형식을 안내할 수 있습니다.'
-          : top3[0][0] + ' has no argument-hint. Add one to its frontmatter to guide argument input.');
+        detail += '\n' + t('insightNoArgHint', top3[0][0]);
       } else {
-        detail += '\n' + (ko
-          ? '전체 ' + fmtNum(totalCount) + '개 스킬 중 ' + fmtNum(usedCount) + '개(' + Math.round(usedCount / totalCount * 100) + '%)를 실제 사용 중입니다.'
-          : fmtNum(usedCount) + ' of ' + fmtNum(totalCount) + ' skills (' + Math.round(usedCount / totalCount * 100) + '%) are actively used.');
+        detail += '\n' + t('insightSkillUsageRate', fmtNum(usedCount), fmtNum(totalCount), Math.round(usedCount / totalCount * 100));
       }
 
       insights.push({ icon: '🏆', title: t('insightUsagePatternTitle'), detail: detail });
@@ -2281,28 +2064,15 @@
     // ── 2. Unused agents cleanup - name specific agents ──
     if (unusedAgents && unusedAgents.length > 0) {
       let names = unusedAgents.map((a) => { return a.name; });
-      let detail = ko
-        ? fmtNum(periodDays) + '일간 미사용 에이전트 ' + fmtNum(names.length) + '개: ' + names.join(', ') + '.'
-          + '\n에이전트 정의 파일을 삭제하면 컨텍스트 로딩이 가벼워집니다.'
-        : fmtNum(names.length) + ' unused agents for ' + fmtNum(periodDays) + ' days: ' + names.join(', ') + '.'
-          + '\nRemove their definition files to reduce context loading.';
+      let detail = t('insightUnusedAgents', fmtNum(names.length), fmtNum(periodDays), names.join(', '));
       insights.push({ icon: '⚠️', title: t('insightUnusedCleanupTitle'), detail: detail });
     }
 
     // ── 3. Efficiency - agent-specific actionable suggestions ──
     const agentSuggestions = {
-      'Explore': {
-        ko: '코드베이스 탐색용으로 빈번하게 사용됩니다. 자주 탐색하는 경로를 CLAUDE.md에 명시하거나, 특정 탐색 패턴(예: "API 엔드포인트 찾기", "컴포넌트 구조 파악")을 전용 스킬로 만들면 탐색 시간이 단축됩니다.',
-        en: 'Frequently used for codebase exploration. Add commonly searched paths to CLAUDE.md, or create dedicated skills for recurring patterns (e.g., "find API endpoints", "trace component structure").'
-      },
-      'general-purpose': {
-        ko: '범용 에이전트로 다양한 작업에 사용됩니다. 반복되는 작업 패턴을 분석하여 전용 에이전트(subagent_type)로 분리하면 프롬프트 품질과 도구 권한을 최적화할 수 있습니다.',
-        en: 'Used for various tasks as a general-purpose agent. Analyze recurring patterns and create dedicated agent types with optimized prompts and tool permissions.'
-      },
-      'Plan': {
-        ko: '계획 수립에 자주 사용됩니다. 프로젝트별 계획 템플릿을 스킬로 만들면 일관된 형식의 계획을 더 빠르게 생성할 수 있습니다.',
-        en: 'Frequently used for planning. Create project-specific plan template skills for faster, consistent plan generation.'
-      }
+      'Explore': 'agentAdviceExplore',
+      'general-purpose': 'agentAdviceGeneral',
+      'Plan': 'agentAdvicePlan'
     };
 
     if (sortedAgents.length > 0) {
@@ -2316,26 +2086,19 @@
         const pct = Math.round(topAgentCount / totalAgentCalls * 100);
         const suggestion = agentSuggestions[topAgentName];
 
-        let detail = (ko ? '상위 에이전트: ' : 'Top agents: ')
-          + top3agents.map((p) => { return p[0] + ' (' + fmtNum(p[1]) + (ko ? '회' : '') + ')'; }).join(', ')
-          + (ko ? '. ' + topAgentName + '이 전체의 ' + pct + '%를 차지합니다.' : '. ' + topAgentName + ' accounts for ' + pct + '% of all agent calls.');
+        let detail = t('insightTopAgents', top3agents.map((p) => { return p[0] + ' (' + fmtNum(p[1]) + t('unitCallCount') + ')'; }).join(', '), topAgentName, pct);
 
         if (suggestion) {
-          detail += '\n' + (suggestion[currentLang] || suggestion.en);
+          detail += '\n' + t(suggestion);
         } else {
-          detail += '\n' + (ko
-            ? '이 에이전트의 반복 호출 패턴을 분석하여, 자주 수행하는 작업을 전용 스킬이나 rules/principles로 정의하면 자동화 효율이 높아집니다.'
-            : 'Analyze this agent\'s recurring call patterns and define frequently performed tasks as dedicated skills or rules/principles.');
+          detail += '\n' + t('insightAgentGenericAdvice');
         }
 
         insights.push({ icon: '💡', title: t('insightEfficiencyTitle'), detail: detail });
       } else {
-        let detail = (ko ? '가장 활발한 에이전트: ' : 'Most active agent: ')
-          + topAgentName + ' (' + fmtNum(topAgentCount) + (ko ? '회' : ' calls') + '). ';
+        let detail = t('insightMostActiveAgent', topAgentName, fmtNum(topAgentCount) + t('unitCalls'));
         if (sortedAgents.length > 1) {
-          detail += ko
-            ? '그 외 ' + (sortedAgents.length - 1) + '종의 에이전트가 사용되었습니다.'
-            : (sortedAgents.length - 1) + ' other agent type(s) were also used.';
+          detail += t('insightOtherAgentTypes', sortedAgents.length - 1);
         }
         insights.push({ icon: '🤖', title: t('insightTopAgentTitle'), detail: detail });
       }
@@ -2358,7 +2121,7 @@
         }
       }
     });
-    const maxHourCount = Math.max.apply(null, hourCounts);
+    const maxHourCount = Math.max(...hourCounts);
     if (maxHourCount > 0) {
       const peakHours = [];
       hourCounts.forEach((c, h) => {
@@ -2379,13 +2142,9 @@
         });
         const peakTopSkills = Object.entries(peakSkillCounts).sort((a, b) => { return b[1] - a[1]; }).slice(0, 3);
 
-        let detail = ko
-          ? peakStr + '에 사용이 집중됩니다.'
-          : 'Usage peaks at ' + peakStr + '.';
+        let detail = t('insightPeakDetail', peakStr);
         if (peakTopSkills.length > 0) {
-          detail += '\n' + (ko
-            ? '이 시간대 주요 항목: ' + peakTopSkills.map((p) => { return p[0] + '(' + p[1] + '회)'; }).join(', ') + '.'
-            : 'Top items during peak: ' + peakTopSkills.map((p) => { return p[0] + ' (' + p[1] + ')'; }).join(', ') + '.');
+          detail += '\n' + t('insightPeakTopItems', peakTopSkills.map((p) => { return p[0] + ' (' + p[1] + t('unitCallCount') + ')'; }).join(', '));
         }
 
         insights.push({ icon: '🕐', title: t('insightTimeTitle'), detail: detail });
@@ -2414,21 +2173,17 @@
         unusedByPlugin[pName].push(s.name);
       });
 
-      let detail = ko
-        ? '활성 플러그인 ' + fmtNum(activePlugins.length) + '개에서 ' + fmtNum(usedPluginSkills.length) + '개 스킬만 사용 중입니다.'
-        : 'Only ' + fmtNum(usedPluginSkills.length) + ' plugin skills are actively used from ' + fmtNum(activePlugins.length) + ' active plugins.';
+      let detail = t('insightPluginDetail', fmtNum(usedPluginSkills.length), fmtNum(activePlugins.length));
 
       if (unusedPluginSkills.length > 0) {
         const pluginEntries = Object.entries(unusedByPlugin).slice(0, 3);
-        detail += '\n' + (ko ? '미사용 스킬: ' : 'Unused: ');
+        detail += '\n' + t('insightUnusedLabel', '');
         detail += pluginEntries.map((entry) => {
           let names = entry[1].slice(0, 2).join(', ');
-          if (entry[1].length > 2) names += (ko ? ' 외 ' + (entry[1].length - 2) + '개' : ' +' + (entry[1].length - 2));
+          if (entry[1].length > 2) names += t('insightPluginMore', entry[1].length - 2);
           return entry[0] + ' → ' + names;
         }).join('; ') + '.';
-        detail += '\n' + (ko
-          ? '미사용 플러그인을 비활성화하면 세션 시작 시 컨텍스트 로딩이 줄어듭니다.'
-          : 'Disabling unused plugins reduces context loading at session start.');
+        detail += '\n' + t('insightPluginAdvice');
       }
 
       insights.push({ icon: '📦', title: t('insightPluginTitle'), detail: detail });
@@ -2443,23 +2198,21 @@
         typeCounts[mtype] = (typeCounts[mtype] || 0) + 1;
       });
       const sortedTypes = Object.entries(typeCounts).sort((a, b) => { return b[1] - a[1]; });
-      const breakdown = sortedTypes.map((p) => { return p[0] + ' ' + p[1] + (ko ? '개' : ''); }).join(', ');
+      const breakdown = sortedTypes.map((p) => { return p[0] + ' ' + p[1] + t('unitItems'); }).join(', ');
 
       const memoryAdvice = {
-        feedback: { ko: 'feedback 메모리가 많습니다. 중복되거나 이미 CLAUDE.md에 반영된 항목이 있는지 확인하고 정리하세요.', en: 'Many feedback memories. Check for duplicates or items already reflected in CLAUDE.md.' },
-        project: { ko: 'project 메모리가 많습니다. 완료된 프로젝트나 오래된 상태 정보를 정리하면 컨텍스트가 정확해집니다.', en: 'Many project memories. Clean up completed projects or outdated status to keep context accurate.' },
-        user: { ko: 'user 메모리가 많습니다. 변경된 역할이나 선호도가 있는지 확인하고 통합하세요.', en: 'Many user memories. Review for outdated roles or preferences and consolidate.' },
-        reference: { ko: 'reference 메모리가 많습니다. 더 이상 유효하지 않은 외부 링크나 리소스가 있는지 확인하세요.', en: 'Many reference memories. Verify that external links and resources are still valid.' }
+        feedback: 'insightMemAdviceFeedback',
+        project: 'insightMemAdviceProject',
+        user: 'insightMemAdviceUser',
+        reference: 'insightMemAdviceReference'
       };
 
       const topType = sortedTypes[0][0];
-      let detail = ko
-        ? '메모리 ' + fmtNum(memoryItems.length) + '개 — ' + breakdown + '.'
-        : fmtNum(memoryItems.length) + ' memories — ' + breakdown + '.';
+      let detail = t('insightMemoryDetail', fmtNum(memoryItems.length), breakdown);
 
       const advice = memoryAdvice[topType];
       if (advice) {
-        detail += '\n' + (advice[currentLang] || advice.en);
+        detail += '\n' + t(advice);
       }
 
       insights.push({ icon: '💾', title: t('insightMemoryTitle'), detail: detail });
@@ -2583,9 +2336,7 @@
           const key2 = dateKey(cur);
           let val2 = activityMap[key2] || 0;
           const level = maxVal === 0 ? 0 : Math.min(4, Math.ceil((val2 / maxVal) * 4));
-          const dayNames = currentLang === 'ko'
-            ? ['일', '월', '화', '수', '목', '금', '토']
-            : ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+          const dayNames = t('dayNames').split(',');
           const tooltip = key2 + ' (' + dayNames[cur.getDay()] + '): ' + (useSI ? fmtCompact(val2) : fmtNum(val2)) + ' ' + (unitLabel || t('activities'));
           weekHtml += '<div class="heatmap-cell" data-level="' + (val2 === 0 ? 0 : level) + '" data-tooltip="' + tooltip + '"></div>';
         }
@@ -2768,7 +2519,6 @@
     if (!svg) return;
 
     const sd = getScopeData();
-    const ko = currentLang === 'ko';
     let containerW = svg.parentElement.clientWidth - 40;
     if (containerW < 500) containerW = 500;
 
@@ -2778,49 +2528,49 @@
     const arrowColor = '#adb5bd';
 
     // --- Data: groups with child nodes ---
-    var groups = [
-      { id: 'context', label: ko ? '컨텍스트 (자동 로드)' : 'Context (auto-loaded)', color: '#f1f3f5', borderColor: '#dee2e6',
+    let groups = [
+      { id: 'context', label: t('flowContextGroup'), color: '#f1f3f5', borderColor: '#dee2e6',
         children: [
           { id: 'claudemd', label: 'CLAUDE.md', color: '#4263eb', nav: 'configFiles', count: (sd.configFiles || []).length },
-          { id: 'rules', label: ko ? '규칙 / 원칙' : 'Rules / Principles', color: '#6b7280', nav: 'rules', count: (sd.rules || []).length + (sd.principles || []).length },
-          { id: 'memory', label: ko ? '💾 메모리' : '💾 Memory', color: '#0891b2', nav: 'memory', count: (sd.memory || []).length },
+          { id: 'rules', label: t('flowRules'), color: '#6b7280', nav: 'rules', count: (sd.rules || []).length + (sd.principles || []).length },
+          { id: 'memory', label: t('flowMemory'), color: '#0891b2', nav: 'memory', count: (sd.memory || []).length },
         ]
       },
-      { id: 'event', label: ko ? '이벤트 기반 (자동 트리거)' : 'Event-driven (auto-trigger)', color: '#fff4e6', borderColor: '#ffd8a8',
+      { id: 'event', label: t('flowEventGroup'), color: '#fff4e6', borderColor: '#ffd8a8',
         children: [
-          { id: 'hooks', label: ko ? '🪝 훅' : '🪝 Hooks', color: '#e8590c', nav: 'hooks', count: (sd.hooks || []).length },
+          { id: 'hooks', label: t('flowHooksNode'), color: '#e8590c', nav: 'hooks', count: (sd.hooks || []).length },
         ]
       },
-      { id: 'invoke', label: ko ? '사용자 실행 (직접 호출)' : 'User-invoked (direct call)', color: '#f3f0ff', borderColor: '#d0bfff',
+      { id: 'invoke', label: t('flowInvokeGroup'), color: '#f3f0ff', borderColor: '#d0bfff',
         children: [
-          { id: 'skills', label: ko ? '🧠 스킬 / 에이전트' : '🧠 Skills / Agents', color: '#7c3aed', nav: 'skills', count: (sd.skills || []).length + (sd.agents || []).length },
-          { id: 'commands', label: ko ? '⌨️ 명령어' : '⌨️ Commands', color: '#6366f1', nav: 'commands', count: (sd.commands || []).length },
-          { id: 'mcp', label: ko ? '🔌 MCP 서버' : '🔌 MCP Servers', color: '#dc2626', nav: 'mcpServers', count: (sd.mcpServers || []).length },
+          { id: 'skills', label: t('flowSkillsNode'), color: '#7c3aed', nav: 'skills', count: (sd.skills || []).length + (sd.agents || []).length },
+          { id: 'commands', label: t('flowCommandsNode'), color: '#6366f1', nav: 'commands', count: (sd.commands || []).length },
+          { id: 'mcp', label: t('flowMcpNode'), color: '#dc2626', nav: 'mcpServers', count: (sd.mcpServers || []).length },
         ]
       },
     ];
 
     // Filter children with 0 count, remove empty groups
-    groups.forEach(function (g) {
-      g.children = g.children.filter(function (c) { return c.count === undefined || c.count > 0; });
+    groups.forEach((g) => {
+      g.children = g.children.filter((c) => { return c.count === undefined || c.count > 0; });
     });
-    groups = groups.filter(function (g) { return g.children.length > 0; });
+    groups = groups.filter((g) => { return g.children.length > 0; });
 
     // --- Measure node widths ---
     function textWidth(str) { return Math.max(90, str.length * 7.5 + 30); }
 
     // --- Layout ---
-    var promptNode = { id: 'prompt', label: ko ? '사용자 프롬프트' : 'User Prompt', color: '#e9ecef', textColor: '#212529', w: 0, h: nodeH };
-    var outputNode = { id: 'output', label: ko ? '결과 출력' : 'Output', color: '#0ca678', textColor: '#fff', w: 0, h: nodeH };
+    const promptNode = { id: 'prompt', label: t('flowPromptNode'), color: '#e9ecef', textColor: '#212529', w: 0, h: nodeH };
+    const outputNode = { id: 'output', label: t('flowOutputNode'), color: '#0ca678', textColor: '#fff', w: 0, h: nodeH };
     promptNode.w = textWidth(promptNode.label);
     outputNode.w = textWidth(outputNode.label);
 
     // Calculate group dimensions
-    var totalH = 0;
-    var maxGroupW = 0;
-    groups.forEach(function (g) {
-      var childrenW = 0;
-      g.children.forEach(function (c) {
+    const totalH = 0;
+    let maxGroupW = 0;
+    groups.forEach((g) => {
+      let childrenW = 0;
+      g.children.forEach((c) => {
         c.w = textWidth(c.label);
         c.h = nodeH;
         childrenW += c.w;
@@ -2834,21 +2584,21 @@
     });
 
     // Normalize group widths
-    var groupW = Math.max(maxGroupW, 300);
-    groups.forEach(function (g) { g.w = groupW; });
+    const groupW = Math.max(maxGroupW, 300);
+    groups.forEach((g) => { g.w = groupW; });
 
     // Vertical layout: prompt → groups → output
-    var curY = pad;
+    let curY = pad;
     promptNode.x = containerW / 2 - promptNode.w / 2;
     promptNode.y = curY;
     curY += promptNode.h + gap * 2;
 
-    groups.forEach(function (g) {
+    groups.forEach((g) => {
       g.x = containerW / 2 - g.w / 2;
       g.y = curY;
       // Position children centered inside group
-      var startX = g.x + (g.w - g.innerW) / 2;
-      g.children.forEach(function (c) {
+      let startX = g.x + (g.w - g.innerW) / 2;
+      g.children.forEach((c) => {
         c.x = startX;
         c.y = g.y + 22 + groupPad;
         startX += c.w + gap;
@@ -2860,7 +2610,7 @@
     outputNode.y = curY;
     curY += outputNode.h + pad;
 
-    var svgH = curY;
+    const svgH = curY;
     svg.setAttribute('viewBox', '0 0 ' + containerW + ' ' + svgH);
     svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
     svg.removeAttribute('width');
@@ -2868,15 +2618,15 @@
     svg.innerHTML = '';
 
     // --- Defs ---
-    var defs = document.createElementNS(S, 'defs');
-    var marker = document.createElementNS(S, 'marker');
+    const defs = document.createElementNS(S, 'defs');
+    const marker = document.createElementNS(S, 'marker');
     marker.setAttribute('id', 'arrowhead');
     marker.setAttribute('markerWidth', '8');
     marker.setAttribute('markerHeight', '6');
     marker.setAttribute('refX', '8');
     marker.setAttribute('refY', '3');
     marker.setAttribute('orient', 'auto');
-    var ap = document.createElementNS(S, 'path');
+    const ap = document.createElementNS(S, 'path');
     ap.setAttribute('d', 'M0,0 L8,3 L0,6 Z');
     ap.setAttribute('fill', arrowColor);
     marker.appendChild(ap);
@@ -2885,7 +2635,7 @@
 
     // --- Draw helpers ---
     function drawArrow(x1, y1, x2, y2) {
-      var line = document.createElementNS(S, 'line');
+      const line = document.createElementNS(S, 'line');
       line.setAttribute('x1', x1); line.setAttribute('y1', y1);
       line.setAttribute('x2', x2); line.setAttribute('y2', y2);
       line.setAttribute('stroke', arrowColor);
@@ -2895,7 +2645,7 @@
     }
 
     function drawNode(n, isWhite) {
-      var g = document.createElementNS(S, 'g');
+      const g = document.createElementNS(S, 'g');
       g.setAttribute('class', 'flowchart-node');
       if (n.nav) {
         g.style.cursor = 'pointer';
@@ -2907,15 +2657,15 @@
           render();
         });
       }
-      var rect = document.createElementNS(S, 'rect');
+      const rect = document.createElementNS(S, 'rect');
       rect.setAttribute('x', n.x); rect.setAttribute('y', n.y);
       rect.setAttribute('width', n.w); rect.setAttribute('height', n.h);
       rect.setAttribute('rx', nodeRx);
       rect.setAttribute('fill', n.color);
       g.appendChild(rect);
 
-      var hasCount = n.count !== undefined;
-      var txt = document.createElementNS(S, 'text');
+      const hasCount = n.count !== undefined;
+      const txt = document.createElementNS(S, 'text');
       txt.setAttribute('x', n.x + n.w / 2);
       txt.setAttribute('y', n.y + n.h / 2 + (hasCount ? -3 : 4));
       txt.setAttribute('text-anchor', 'middle');
@@ -2927,7 +2677,7 @@
       g.appendChild(txt);
 
       if (hasCount) {
-        var ct = document.createElementNS(S, 'text');
+        const ct = document.createElementNS(S, 'text');
         ct.setAttribute('x', n.x + n.w / 2);
         ct.setAttribute('y', n.y + n.h / 2 + 12);
         ct.setAttribute('text-anchor', 'middle');
@@ -2951,9 +2701,9 @@
     }
 
     // Groups
-    groups.forEach(function (g, gi) {
+    groups.forEach((g, gi) => {
       // Group rect
-      var grect = document.createElementNS(S, 'rect');
+      const grect = document.createElementNS(S, 'rect');
       grect.setAttribute('x', g.x); grect.setAttribute('y', g.y);
       grect.setAttribute('width', g.w); grect.setAttribute('height', g.h);
       grect.setAttribute('rx', groupRx);
@@ -2963,7 +2713,7 @@
       svg.appendChild(grect);
 
       // Group label
-      var glabel = document.createElementNS(S, 'text');
+      const glabel = document.createElementNS(S, 'text');
       glabel.setAttribute('x', g.x + groupPad);
       glabel.setAttribute('y', g.y + 16);
       glabel.setAttribute('fill', '#6b7280');
@@ -2974,7 +2724,7 @@
       svg.appendChild(glabel);
 
       // Children
-      g.children.forEach(function (c) { drawNode(c, false); });
+      g.children.forEach((c) => { drawNode(c, false); });
 
       // Arrow to next group
       if (gi < groups.length - 1) {
@@ -3002,52 +2752,18 @@
 
     // Category descriptions
     const CATEGORY_DESC = {
-      skills: {
-        ko: 'Skills는 사용자가 /명령어로 호출하는 재사용 가능한 프롬프트 템플릿입니다. skills/ 디렉토리 또는 플러그인을 통해 제공되며, 각 SKILL.md 파일의 frontmatter에 이름·설명·인자 힌트를 정의합니다. Skill 도구를 통해 대화 중 자동으로 호출될 수도 있습니다.',
-        en: 'Skills are reusable prompt templates invoked via /commands. Provided from the skills/ directory or plugins, each SKILL.md defines name, description, and argument hints in its frontmatter. They can also be auto-invoked via the Skill tool during conversations.',
-        docs: 'https://docs.anthropic.com/en/docs/claude-code/skills'
-      },
-      agents: {
-        ko: 'Agents는 복잡한 작업을 자율적으로 수행하는 서브프로세스입니다. agents/ 디렉토리에 마크다운으로 정의하며, 모델(haiku/sonnet/opus), 사용 가능 도구, 전문 영역을 설정할 수 있습니다. Agent 도구로 디스패치되어 독립적인 컨텍스트에서 실행됩니다.',
-        en: 'Agents are subprocesses that autonomously handle complex tasks. Defined as markdown in the agents/ directory, they specify model (haiku/sonnet/opus), available tools, and domain expertise. Dispatched via the Agent tool, they run in independent contexts.',
-        docs: 'https://docs.anthropic.com/en/docs/claude-code/sub-agents'
-      },
-      rules: {
-        ko: 'Rules는 Claude의 동작을 제어하는 지시 파일입니다. {{configDir}}/rules/ 디렉토리에 마크다운 파일로 저장되며, 모든 세션에서 자동으로 컨텍스트에 로드됩니다. CLAUDE.md와 달리 개별 파일로 분리하여 관심사를 구분할 수 있습니다.',
-        en: 'Rules are instruction files that control Claude\'s behavior. Stored as markdown files in {{configDir}}/rules/, they are automatically loaded into context in every session. Unlike CLAUDE.md, they allow separation of concerns into individual files.'
-      },
-      principles: {
-        ko: 'Principles는 Rules와 동일한 구조이나, 팀 전체에 적용되는 상위 원칙을 정의합니다. {{configDir}}/principles/ 디렉토리에 저장되며, 코드 작성 원칙, 리뷰 기준, 자동화 정책 등 반복적으로 참조해야 할 지침을 모아둡니다.',
-        en: 'Principles share the same structure as Rules but define higher-level guidelines applied across the team. Stored in {{configDir}}/principles/, they collect reusable directives such as coding standards, review criteria, and automation policies.'
-      },
-      hooks: {
-        ko: 'Hooks는 Claude Code의 특정 이벤트(도구 실행 전/후, 알림 등)에 자동으로 실행되는 셸 커맨드입니다. settings.json에 정의되며, 사용자가 직접 호출하지 않고 이벤트 기반으로 트리거됩니다.',
-        en: 'Hooks are shell commands that run automatically on specific Claude Code events (pre/post tool use, notifications, etc.). Defined in settings.json, they are event-driven and not invoked manually.',
-        docs: 'https://docs.anthropic.com/en/docs/claude-code/hooks'
-      },
-      memory: {
-        ko: 'Memory는 대화 간 지속되는 파일 기반 기억 시스템입니다. user, feedback, project, reference 타입으로 구분되며, MEMORY.md가 인덱스 역할을 합니다. 모든 세션에서 자동 로드되어 맥락을 유지합니다.',
-        en: 'Memory is a file-based persistence system across conversations. Organized by type (user, feedback, project, reference), with MEMORY.md as the index. Automatically loaded in every session to maintain context.',
-        docs: 'https://docs.anthropic.com/en/docs/claude-code/memory'
-      },
-      mcpServers: {
-        ko: 'MCP Servers는 Claude Code에 외부 도구를 연결하는 서버입니다. .claude.json에 정의되며, 브라우저 자동화, n8n 워크플로, Obsidian 등 다양한 외부 시스템과 통합할 수 있습니다.',
-        en: 'MCP Servers connect external tools to Claude Code. Defined in .claude.json, they enable integration with browser automation, n8n workflows, Obsidian, and other external systems.',
-        docs: 'https://docs.anthropic.com/en/docs/claude-code/mcp'
-      },
-      plugins: {
-        ko: 'Plugins는 스킬, 에이전트, 훅을 묶어 배포하는 패키지입니다. 마켓플레이스에서 설치하거나 직접 만들 수 있으며, settings.json의 enabledPlugins로 활성화/비활성화를 제어합니다.',
-        en: 'Plugins are packages bundling skills, agents, and hooks for distribution. Installable from marketplaces or custom-built, controlled via enabledPlugins in settings.json.',
-        docs: 'https://docs.anthropic.com/en/docs/claude-code/plugins'
-      },
-      configFiles: {
-        ko: '설정 파일은 Claude Code의 동작을 정의하는 핵심 파일들입니다. CLAUDE.md(프로젝트 지시), AGENTS.md(서브에이전트 지시), settings.json(공유 설정), settings.local.json(로컬 전용 설정)으로 구성됩니다.',
-        en: 'Config files are core files defining Claude Code behavior. Includes CLAUDE.md (project instructions), AGENTS.md (subagent instructions), settings.json (shared config), and settings.local.json (local-only config).',
-        docs: 'https://docs.anthropic.com/en/docs/claude-code/settings'
-      }
+      skills: { key: 'catDescSkills', docs: 'https://docs.anthropic.com/en/docs/claude-code/skills' },
+      agents: { key: 'catDescAgents', docs: 'https://docs.anthropic.com/en/docs/claude-code/sub-agents' },
+      rules: { key: 'catDescRules' },
+      principles: { key: 'catDescPrinciples' },
+      hooks: { key: 'catDescHooks', docs: 'https://docs.anthropic.com/en/docs/claude-code/hooks' },
+      memory: { key: 'catDescMemory', docs: 'https://docs.anthropic.com/en/docs/claude-code/memory' },
+      mcpServers: { key: 'catDescMcpServers', docs: 'https://docs.anthropic.com/en/docs/claude-code/mcp' },
+      plugins: { key: 'catDescPlugins', docs: 'https://docs.anthropic.com/en/docs/claude-code/plugins' },
+      configFiles: { key: 'catDescConfigFiles', docs: 'https://docs.anthropic.com/en/docs/claude-code/settings' }
     };
     const catDesc = CATEGORY_DESC[currentView];
-    const catDescText = catDesc ? escapeHtml(catDesc[currentLang] || catDesc.en) : '';
+    const catDescText = catDesc ? escapeHtml(t(catDesc.key)) : '';
 
     let html = '<div class="page-header">'
       + '<h1>' + cat.icon + ' ' + t('categoryOverview', getCatLabel(cat)) + '</h1>'
@@ -3300,33 +3016,16 @@
     }
 
     // Per-file descriptions
-    const ko = currentLang === 'ko';
     const CONFIG_DESC = {
-        'settings.json': {
-          ko: 'Claude Code의 공유 설정 파일입니다. hooks, 플러그인 활성화, 권한, 환경변수 등 하네스의 핵심 동작을 정의합니다. Git으로 추적되어 팀원 간 설정을 공유할 수 있습니다.',
-          en: 'Shared configuration file for Claude Code. Defines core harness behavior including hooks, plugin activation, permissions, and environment variables. Tracked by Git for team-wide sharing.',
-          docs: 'https://docs.anthropic.com/en/docs/claude-code/settings'
-        },
-        'settings.local.json': {
-          ko: 'Git에 추적되지 않는 로컬 전용 설정 파일입니다. 개인 API 토큰, 로컬 환경에 특화된 경로, 디바이스별 설정 등 공유하지 않아야 할 설정을 저장합니다. settings.json과 동일한 구조이며, 동일 키가 있으면 이 파일의 값이 우선 적용됩니다.',
-          en: 'Local-only configuration file, not tracked by Git. Stores settings that should not be shared: personal API tokens, local-specific paths, device-specific preferences. Same structure as settings.json — overlapping keys here take precedence.',
-          docs: 'https://docs.anthropic.com/en/docs/claude-code/settings'
-        },
-        'CLAUDE.md': {
-          ko: '프로젝트의 최상위 지시 파일입니다. 모든 세션에서 자동으로 컨텍스트에 로드되며, 코드 규칙, 작업 원칙, 프로젝트 구조 등을 정의합니다.',
-          en: 'Top-level instruction file for the project. Automatically loaded into context in every session. Defines code conventions, work principles, and project structure.',
-          docs: 'https://docs.anthropic.com/en/docs/claude-code/memory'
-        },
-        'AGENTS.md': {
-          ko: '서브에이전트에 대한 추가 지시 파일입니다. Agent 도구로 생성된 서브에이전트의 동작을 커스터마이즈합니다.',
-          en: 'Additional instruction file for subagents. Customizes the behavior of subagents spawned via the Agent tool.',
-          docs: 'https://docs.anthropic.com/en/docs/claude-code/sub-agents'
-        }
+        'settings.json': { key: 'configDescSettings', docs: 'https://docs.anthropic.com/en/docs/claude-code/settings' },
+        'settings.local.json': { key: 'configDescSettingsLocal', docs: 'https://docs.anthropic.com/en/docs/claude-code/settings' },
+        'CLAUDE.md': { key: 'configDescClaudeMd', docs: 'https://docs.anthropic.com/en/docs/claude-code/memory' },
+        'AGENTS.md': { key: 'configDescAgentsMd', docs: 'https://docs.anthropic.com/en/docs/claude-code/sub-agents' }
       };
       const descEntry = CONFIG_DESC[item.name];
       if (descEntry) {
         html += '<div class="section"><div class="section-title">' + t('description') + '</div>'
-          + '<div class="card" style="padding:16px;font-size:13px;color:var(--text-secondary)">' + escapeHtml(descEntry[currentLang] || descEntry.en)
+          + '<div class="card" style="padding:16px;font-size:13px;color:var(--text-secondary)">' + escapeHtml(t(descEntry.key))
           + docsLinkHtml(descEntry.docs)
           + '</div></div>';
       }
@@ -3338,19 +3037,19 @@
 
       // Summary section
       const summaryParts = [];
-      if (stats.hooks) summaryParts.push('hooks: ' + fmtNum(stats.hooks) + (ko ? '개 이벤트' : ' events'));
+      if (stats.hooks) summaryParts.push('hooks: ' + fmtNum(stats.hooks) + t('unitEvents'));
       if (stats.enabledPlugins) summaryParts.push('enabledPlugins: ' + fmtNum(stats.enabledPlugins));
-      if (stats.permissions) summaryParts.push('permissions: ' + (ko ? '설정됨' : 'configured'));
-      if (stats.env) summaryParts.push('env: ' + fmtNum(stats.env) + (ko ? '개 변수' : ' vars'));
+      if (stats.permissions) summaryParts.push('permissions: ' + t('configuredLabel'));
+      if (stats.env) summaryParts.push('env: ' + fmtNum(stats.env) + t('unitVars'));
 
-      html += '<div class="section"><div class="section-title">' + (ko ? '구성 요약' : 'Summary') + '</div>'
+      html += '<div class="section"><div class="section-title">' + t('configSummary') + '</div>'
         + '<div class="card" style="padding:16px;font-size:13px;color:var(--text-secondary)">'
-        + '<strong>' + (ko ? '최상위 키:' : 'Top-level keys:') + '</strong> ' + keys.map((k) => { return '<code>' + escapeHtml(k) + '</code>'; }).join(', ')
+        + '<strong>' + t('configTopLevelKeys') + '</strong> ' + keys.map((k) => { return '<code>' + escapeHtml(k) + '</code>'; }).join(', ')
         + (summaryParts.length > 0 ? '<br>' + summaryParts.join(' · ') : '')
         + '</div></div>';
 
       // JSON code
-      html += '<div class="section"><div class="section-title">' + (ko ? '전체 설정' : 'Full Configuration') + '</div>'
+      html += '<div class="section"><div class="section-title">' + t('configFull') + '</div>'
         + '<div class="content-preview"><pre><code class="lang-json">' + syntaxHighlightJson(item.jsonContent, true) + '</code></pre></div></div>';
 
     } else {
@@ -3465,41 +3164,6 @@
     return html;
   }
 
-  const HOOK_DESCRIPTIONS = {
-    ko: {
-      PreToolUse: '도구가 실행되기 직전에 호출됩니다. 도구 실행을 허용/거부/수정할 수 있습니다.',
-      PostToolUse: '도구가 성공적으로 실행된 후 호출됩니다. 결과를 검증하거나 후처리를 수행할 수 있습니다.',
-      Notification: 'Claude가 사용자에게 알림을 보낼 때 호출됩니다. 알림 사운드 재생 등에 사용됩니다.',
-      Stop: 'Claude의 응답이 완료된 후 호출됩니다. 추가 작업을 요청하거나 완료 알림을 보낼 수 있습니다.',
-      SessionStart: '새 세션이 시작되거나 재개될 때 호출됩니다. 환경 초기화, 컨텍스트 주입에 사용됩니다.',
-      UserPromptSubmit: '사용자가 프롬프트를 제출한 직후 호출됩니다. 프롬프트를 차단하거나 컨텍스트를 추가할 수 있습니다.',
-      PostToolUseFailure: '도구 실행이 실패한 후 호출됩니다. 에러 처리나 복구 로직에 사용됩니다.',
-      SubagentStop: '서브에이전트가 작업을 완료했을 때 호출됩니다. 결과를 검증하거나 계속 실행을 강제할 수 있습니다.',
-      SessionEnd: '세션이 종료될 때 호출됩니다. 정리 작업이나 로깅에 사용됩니다.',
-      InstructionsLoaded: 'CLAUDE.md와 rules 파일이 로드된 후 호출됩니다.',
-      PermissionRequest: '권한 다이얼로그가 표시될 때 호출됩니다. 자동 허용/거부를 설정할 수 있습니다.',
-      ConfigChange: '설정 파일이 변경될 때 호출됩니다.',
-      PreCompact: '컨텍스트 압축이 시작되기 직전에 호출됩니다.',
-      PostCompact: '컨텍스트 압축이 완료된 후 호출됩니다.',
-    },
-    en: {
-      PreToolUse: 'Called just before a tool executes. Can allow, deny, or modify the tool call.',
-      PostToolUse: 'Called after a tool completes successfully. Used for validation or post-processing.',
-      Notification: 'Called when Claude sends a notification. Commonly used for notification sounds.',
-      Stop: 'Called when Claude finishes responding. Can force continuation or trigger follow-up actions.',
-      SessionStart: 'Called when a new session starts or resumes. Used for environment init and context injection.',
-      UserPromptSubmit: 'Called right after user submits a prompt. Can block prompts or inject additional context.',
-      PostToolUseFailure: 'Called after a tool execution fails. Used for error handling or recovery.',
-      SubagentStop: 'Called when a subagent completes. Can validate results or force continued execution.',
-      SessionEnd: 'Called when a session ends. Used for cleanup or logging.',
-      InstructionsLoaded: 'Called after CLAUDE.md and rules files are loaded.',
-      PermissionRequest: 'Called when a permission dialog is shown. Can auto-allow or deny.',
-      ConfigChange: 'Called when a settings file changes.',
-      PreCompact: 'Called just before context compaction begins.',
-      PostCompact: 'Called after context compaction completes.',
-    }
-  };
-
   function renderHookDetail(item) {
     let html = '<div class="detail-meta">';
     if (item.event) html += metaCard('EVENT', item.event);
@@ -3508,7 +3172,8 @@
     html += '</div>';
 
     // Hook event description
-    const hookDesc = (HOOK_DESCRIPTIONS[currentLang] || HOOK_DESCRIPTIONS.ko)[item.event];
+    const hookDescKey = item.event ? 'hookDesc' + item.event : '';
+    const hookDesc = hookDescKey && I18N.en[hookDescKey] ? t(hookDescKey) : '';
     if (hookDesc) {
       html += '<div class="section"><div class="section-title">' + t('description') + '</div>'
         + '<div class="card" style="padding:16px;font-size:13px;color:var(--text-secondary)">' + escapeHtml(hookDesc)
@@ -3644,7 +3309,6 @@
 
   function renderTeamDetail(item) {
     let html = '';
-    const ko = currentLang === 'ko';
     if (item.filePath) {
       html += '<div class="file-path"><span class="file-path-label">' + t('configPathLabel') + '</span> ' + escapeHtml(item.filePath) + '</div>';
     }
@@ -3653,22 +3317,22 @@
         + '<div class="card" style="padding:16px;font-size:13px;color:var(--text-secondary)">' + escapeHtml(item.description) + '</div></div>';
     }
     html += '<div class="detail-meta">'
-      + metaCard(ko ? '멤버' : 'Members', item.members || 0)
+      + metaCard(t('labelMembers'), item.members || 0)
       + (item.leadAgentId ? metaCard('Lead', item.leadAgentId) : '')
-      + (item.createdAt ? metaCard(ko ? '생성일' : 'Created', formatDateTime(item.createdAt)) : '')
+      + (item.createdAt ? metaCard(t('labelCreated'), formatDateTime(item.createdAt)) : '')
       + '</div>';
     // Member list
     if (item.memberList && item.memberList.length > 0) {
-      html += '<div class="section"><div class="section-title">' + (ko ? '멤버 목록' : 'Member List') + '</div>'
+      html += '<div class="section"><div class="section-title">' + t('memberList') + '</div>'
         + '<div class="card" style="padding:0;overflow:hidden">'
         + '<div class="recent-item" style="background:var(--hover);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-secondary);cursor:default;border-bottom:1px solid var(--border)">'
         + '<span class="ri-icon" style="visibility:hidden">🤖</span>'
-        + '<span class="ri-name">' + (ko ? '이름' : 'Name') + '</span>'
-        + '<span class="ri-time" style="flex:2">' + (ko ? '역할' : 'Role') + '</span>'
-        + '<span style="font-size:11px">' + (ko ? '모델' : 'Model') + '</span>'
+        + '<span class="ri-name">' + t('colName') + '</span>'
+        + '<span class="ri-time" style="flex:2">' + t('colRole') + '</span>'
+        + '<span style="font-size:11px">' + t('colModel') + '</span>'
         + '</div>'
         + '<div class="recent-list" style="margin:0">';
-      item.memberList.forEach(function (m, idx) {
+      item.memberList.forEach((m, idx) => {
         let modelShort = (m.model || '').replace(/^claude-/, '').replace(/-\d{8,}$/, '');
         let modelClass = m.model && m.model.includes('haiku') ? 'haiku' : m.model && m.model.includes('sonnet') ? 'sonnet' : m.model && m.model.includes('opus') ? 'opus' : 'default';
         let hasDetail = m.prompt || m.cwd;
@@ -3710,11 +3374,10 @@
 
   function renderTodoDetail(item) {
     let html = '';
-    const ko = currentLang === 'ko';
     html += '<div class="detail-meta">'
-      + metaCard(ko ? '전체' : 'Total', item.total || 0)
-      + metaCard(ko ? '진행중' : 'Pending', item.pending || 0)
-      + metaCard(ko ? '완료' : 'Completed', item.completed || 0)
+      + metaCard(t('labelTotal'), item.total || 0)
+      + metaCard(t('labelPending'), item.pending || 0)
+      + metaCard(t('labelCompleted'), item.completed || 0)
       + '</div>';
     if (item.filePath) {
       html += '<div class="file-path"><span class="file-path-label">' + t('configPathLabel') + '</span> ' + escapeHtml(item.filePath) + '</div>';
@@ -3745,14 +3408,14 @@
       });
     });
     // Team member toggle
-    content.querySelectorAll('.team-member-toggle').forEach(function (el) {
+    content.querySelectorAll('.team-member-toggle').forEach((el) => {
       el.addEventListener('click', function (e) {
         e.stopPropagation();
-        var idx = el.dataset.memberIdx;
-        var detail = document.getElementById('team-member-' + idx);
-        var chevron = el.querySelector('.chevron');
+        let idx = el.dataset.memberIdx;
+        let detail = document.getElementById('team-member-' + idx);
+        const chevron = el.querySelector('.chevron');
         if (detail) {
-          var open = detail.style.display !== 'none';
+          const open = detail.style.display !== 'none';
           detail.style.display = open ? 'none' : 'block';
           if (chevron) chevron.textContent = open ? '▶' : '▼';
         }
@@ -3773,14 +3436,10 @@
   }
 
   function showUpdateBanner() {
-    const ko = currentLang === 'ko';
     const banner = document.createElement('div');
     banner.className = 'update-banner';
-    banner.innerHTML = '<span>' + (ko
-      ? '⚡ 새로운 데이터가 감지되었습니다. 페이지를 새로고침하면 최신 데이터를 확인할 수 있습니다.'
-      : '⚡ New data detected. Refresh the page to see the latest data.')
-      + '</span>'
-      + '<button onclick="location.reload()">' + (ko ? '새로고침' : 'Refresh') + '</button>'
+    banner.innerHTML = '<span>' + t('updateBannerMsg') + '</span>'
+      + '<button onclick="location.reload()">' + t('updateBannerRefresh') + '</button>'
       + '<button onclick="this.parentElement.remove()">✕</button>';
     document.body.prepend(banner);
   }

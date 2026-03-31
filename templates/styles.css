@@ -1759,6 +1759,7 @@ body.dark .sidebar-search input {
 }
 
 .bb text { fill: var(--text-secondary); }
+.bb-chart-arc text { fill: #fff; }
 .bb-chart-arcs-title {
   font-size: 22px !important;
   font-weight: 700 !important;
