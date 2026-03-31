@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.1] - 2026-03-31
+
+### Fixed
+- Fix missing `type: "command"` field in `--enable-auto` Stop hook registration, which caused Claude Code settings validation error on startup
+
 ## [0.1.0] - 2026-03-30
 
 ### Added
