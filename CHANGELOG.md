@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.2.0] - 2026-03-31
+
+### Added
+- esbuild for CSS/JS minification (CSS -20%, JS -31%)
+- Billboard.js (pkgd) bundled inline — full offline support, no CDN dependencies
+- Usage data minification: key shortening + sessionId indexing (14.8MB → 8.5MB, -43%)
+- English locale file (`locales/en.json`) — extracted from hardcoded `I18N.en`
+- Task category schema file (`work-types.json`) — externalized from build script
+- 13 new work type categories (25 total): Refactor, Test, Git, Frontend, Backend, Database, DevOps, Security, Data, Research, i18n, Comms, PM
+
+### Changed
+- All i18n strings externalized from app.js to locale files (324 keys)
+- Task categories auto-generated at every build (no longer user-editable)
+- Category labels use English only (removed per-language labels from schema)
+- app.js converted from ES5 to ES6+ (const/let, arrow functions, spread)
+- Dark theme CSS dynamically injected via JS (replaces `<style media>` approach)
+
+### Fixed
+- Donut chart text color override (`.bb-chart-arc text` specificity)
+- `--data-only` help text now matches actual behavior
+- Added `node_modules` guard with clear error message
+
 ## [0.1.3] - 2026-03-31
 
 ### Added
