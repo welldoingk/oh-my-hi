@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.3] - 2026-03-31
+
+### Added
+- Dashboard guide document (GUIDE.md) with detailed walkthrough of each section
+- Update instructions in README and Help page (CLI + in-session commands)
+- Shell-styled command block in Help page
+- Privacy section in README
+- Improved `--data-only` and `--enable-auto` descriptions with bookmark/refresh tips
+- Version display in sidebar now auto-injected from package.json at build time
+
+### Changed
+- "스코프(워크스페이스)" → "워크스페이스(스코프)" in Korean locale
+
 ## [0.1.2] - 2026-03-31
 
 ### Added

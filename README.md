@@ -33,6 +33,18 @@ claude plugin install oh-my-hi
 /plugin install oh-my-hi@oh-my-hi-marketplace
 ```
 
+## Update
+
+To update to the latest version, run the same install command:
+
+```bash
+# From the Command Line
+$ claude plugin install oh-my-hi
+
+# Claude Code (in-session)
+/plugin install oh-my-hi@oh-my-hi-marketplace
+```
+
 ## Usage
 
 Run in Claude Code:
@@ -64,6 +76,10 @@ Enable automatic data refresh so the dashboard stays up to date:
 
 This registers a Stop hook that rebuilds the dashboard data whenever a Claude Code session ends. Refresh the browser tab to see the latest data.
 
+## Guide
+
+See **[GUIDE.md](GUIDE.md)** for a detailed walkthrough of each dashboard section — overview, token analytics, cost estimation, structure view, category pages, and more.
+
 ## How it works
 
 1. **Parse** — Reads your Claude Code config directory for skills, agents, plugins, hooks, memory, MCP servers, rules, principles, commands, teams, plans, and usage transcripts
@@ -76,6 +92,10 @@ This registers a Stop hook that rebuilds the dashboard data whenever a Claude Co
 
 - **English**: Built-in default
 - **Other languages**: A template locale file is auto-generated on first build. Translate it and rebuild
+
+## Privacy
+
+All data stays on your machine. `oh-my-hi` reads only local Claude Code config files and transcripts — nothing is sent to external servers. The generated dashboard is a standalone HTML file opened via `file://` protocol, with no network requests. Your usage data, token statistics, and configuration details never leave your local environment.
 
 ## Browser support
 

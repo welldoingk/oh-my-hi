@@ -210,7 +210,9 @@ async function main() {
   // 5c) index.html — always regenerated (data is inlined for file:// compatibility)
   const template = fs.readFileSync(path.join(TEMPLATES, 'dashboard.html'), 'utf-8');
   const styles = fs.readFileSync(path.join(TEMPLATES, 'styles.css'), 'utf-8');
-  const appJs = fs.readFileSync(path.join(TEMPLATES, 'app.js'), 'utf-8');
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf-8'));
+  const appJs = fs.readFileSync(path.join(TEMPLATES, 'app.js'), 'utf-8')
+    .replace(/__VERSION__/g, JSON.stringify(pkg.version));
 
   const escapeForScript = (str) => str
     .replaceAll('</', String.raw`<\u002f`)
@@ -227,6 +229,7 @@ async function main() {
     __LOCALE_DATA__: escapedLocale,
     __APP_JS__: appJs,
     __DATA__: escapedJson,
+    __VERSION__: pkg.version,
   };
   const placeholderRe = new RegExp(Object.keys(placeholders).map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'g');
   const html = template.replace(placeholderRe, (match) => placeholders[match]);

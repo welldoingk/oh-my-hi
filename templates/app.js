@@ -171,10 +171,14 @@
     helpTitle: "Help",
     helpUsage: "Usage",
     helpUsageDesc: "Generate the dashboard via the /omh skill.",
+    helpUpdate: "Update",
+    helpUpdateDesc: "To update to the latest version, run the same install command:",
+    helpUpdateCli: "From the command line",
+    helpUpdateSession: "Claude Code (in-session)",
     helpParams: "Parameters",
     helpParamDefault: "Parse and generate data, build web-ui, then open automatically in browser",
-    helpParamDataOnly: "Regenerate data only without rebuilding web-ui",
-    helpParamEnableAuto: "Auto-rebuild data+web-ui on session end (registers Stop hook). Manual browser refresh required",
+    helpParamDataOnly: "Regenerate data + web-ui without opening a new browser tab.<br>💡 If you've bookmarked the generated local file, just refresh the page to see the latest data.",
+    helpParamEnableAuto: "Auto-rebuild data+web-ui on every session end (registers Stop hook).<br>💡 Once enabled, you don't need to run /omh or --data-only manually — just refresh the bookmarked page to see the latest data.",
     helpParamDisableAuto: "Disable auto-rebuild (removes Stop hook)",
     helpParamStatus: "Check auto-refresh hook status",
     helpParamPaths: "Build with only the specified project paths",
@@ -2627,6 +2631,18 @@
       + '<div class="card help-card"><p>' + t('helpUsageDesc') + '</p></div>'
       + '</div>';
 
+    // Update
+    html += '<div class="section">'
+      + '<div class="section-title">' + t('helpUpdate') + '</div>'
+      + '<div class="card help-card"><p>' + t('helpUpdateDesc') + '</p>'
+      + '<pre style="margin:8px 0 0;padding:8px 12px;background:#1a1b1e;color:#e0e0e0;border-radius:6px;font-size:13px;line-height:1.6"><code>'
+      + '<span style="color:#6c757d"># ' + t('helpUpdateCli') + '</span>\n'
+      + '$ claude plugin install oh-my-hi\n\n'
+      + '<span style="color:#6c757d"># ' + t('helpUpdateSession') + '</span>\n'
+      + '/plugin install oh-my-hi@oh-my-hi-marketplace'
+      + '</code></pre>'
+      + '</div></div>';
+
     // Parameters
     html += '<div class="section">'
       + '<div class="section-title">' + t('helpParams') + '</div>'
@@ -2671,7 +2687,7 @@
       + helpRow('helpCommands', 'helpCommandsDesc', '⌨️')
       + '</div></div>';
 
-    html += '<div class="generated-at">oh-my-hi v0.1.0 · <a href="https://github.com/netil/oh-my-hi" target="_blank" style="color:inherit">GitHub</a></div>';
+    html += '<div class="generated-at">oh-my-hi v' + __VERSION__ + ' · <a href="https://github.com/netil/oh-my-hi" target="_blank" style="color:inherit">GitHub</a></div>';
     content.innerHTML = html;
   }
 
