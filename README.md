@@ -16,12 +16,21 @@ Parses your entire Claude Code configuration and usage data, then generates an i
 
 ## Installation
 
+#### From the Command Line
+
 ```bash
 # 1. Add marketplace
-claude plugin marketplace add github:netil/oh-my-hi
+claude plugin marketplace add netil/oh-my-hi
 
 # 2. Install plugin
 claude plugin install oh-my-hi
+```
+
+#### Claude Code (via Plugin Marketplace)
+
+```bash
+/plugin marketplace add netil/oh-my-hi
+/plugin install oh-my-hi@oh-my-hi-marketplace
 ```
 
 ## Usage

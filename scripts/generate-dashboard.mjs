@@ -122,19 +122,23 @@ async function main() {
   const scopes = detectScopes(CLAUDE_CONFIG_DIR, extraPaths);
   console.log(`  scopes: ${scopes.length} detected`);
 
-  // 2) Collect global data
-  const globalData = collectScopeData(CLAUDE_CONFIG_DIR);
+  // 2) Collect global data + per-project data in parallel
+  const projectScopes = scopes.filter(s => s.type !== 'global');
+
+  const [globalData, ...projectResults] = await Promise.all([
+    collectScopeData(CLAUDE_CONFIG_DIR),
+    ...projectScopes.map(scope =>
+      !fs.existsSync(scope.configPath)
+        ? Promise.resolve({ id: scope.id, data: emptyScopeData() })
+        : collectProjectData(scope.configPath, scope.projectPath).then(data => ({ id: scope.id, data }))
+    ),
+  ]);
   console.log(`  global: ${globalData.skills.length} skills, ${globalData.agents.length} agents, ${globalData.plugins.length} plugins`);
 
-  // 3) Collect per-project data
+  // 3) Assemble scope data
   const scopeData = { global: globalData };
-  for (const scope of scopes) {
-    if (scope.type === 'global') continue;
-    if (!fs.existsSync(scope.configPath)) {
-      scopeData[scope.id] = emptyScopeData();
-      continue;
-    }
-    scopeData[scope.id] = collectProjectData(scope.configPath, scope.projectPath);
+  for (const result of projectResults) {
+    scopeData[result.id] = result.data;
   }
 
   // 4) Detect system locale (macOS: AppleLanguages first, others: LANG env var)
@@ -153,7 +157,10 @@ async function main() {
     }
   } catch { /* fallback to en */ }
 
-  // 5) Build task categories dynamically from token data
+  // 5) Ensure output directory exists before writing task-categories
+  fs.mkdirSync(OUTPUT, { recursive: true });
+
+  // 5a) Build task categories dynamically from token data
   const taskCategories = buildTaskCategories(scopeData);
 
   // 6) Build full data object
@@ -165,9 +172,6 @@ async function main() {
     configDir: CLAUDE_CONFIG_DIR,
     systemLocale,
   };
-
-  // 5) Output
-  fs.mkdirSync(OUTPUT, { recursive: true });
   const dataOnly = args.includes('--data-only');
   const indexPath = path.join(OUTPUT, 'index.html');
   const dataPath = path.join(OUTPUT, 'data.json');
@@ -216,11 +220,16 @@ async function main() {
   const escapedJson = escapeForScript(safeJson);
   const escapedLocale = escapeForScript(JSON.stringify(localeObj));
 
-  const html = template
-    .replace('__STYLES__', () => styles)
-    .replace('__DATA__', () => escapedJson)
-    .replace('__LOCALE_DATA__', () => escapedLocale)
-    .replace('__APP_JS__', () => appJs);
+  // Use a single-pass replacer to avoid cross-contamination when data payloads
+  // contain placeholder-like strings (e.g. __LOCALE_DATA__ inside skill descriptions).
+  const placeholders = {
+    __STYLES__: styles,
+    __LOCALE_DATA__: escapedLocale,
+    __APP_JS__: appJs,
+    __DATA__: escapedJson,
+  };
+  const placeholderRe = new RegExp(Object.keys(placeholders).map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'g');
+  const html = template.replace(placeholderRe, (match) => placeholders[match]);
 
   fs.writeFileSync(indexPath, html, 'utf-8');
   console.log(`oh-my-hi: index.html generated → ${indexPath}`);
@@ -329,9 +338,10 @@ function openOrRefreshBrowser(filePath) {
   }
 }
 
-/** Collect global scope data */
-function collectScopeData(configDir) {
-  return {
+/** Collect global scope data (sync parsers + async usage in parallel) */
+async function collectScopeData(configDir) {
+  // Run sync parsers immediately (fast, small files)
+  const syncData = {
     configFiles: parseConfigFiles(configDir),
     skills: parseSkills(configDir),
     agents: parseAgents(configDir),
@@ -345,13 +355,20 @@ function collectScopeData(configDir) {
     teams: parseTeams(configDir),
     plans: parsePlans(configDir),
     todos: parseTodos(configDir),
-    usage: parseUsage(configDir, 0),
   };
+
+  // Async usage parser runs concurrently with sync parsers' setup
+  const usage = await parseUsage(configDir, 0);
+
+  return { ...syncData, usage };
 }
 
 /** Collect project scope data */
-function collectProjectData(configPath, projectPath) {
-  return {
+async function collectProjectData(configPath, projectPath) {
+  const emptyUsage = { commands: [], skills: [], agents: [], mcpCalls: [], tokenEntries: [], promptStats: [], latencyEntries: [], dailyActivity: [] };
+
+  // Sync parsers (fast)
+  const syncData = {
     configFiles: safeCall(() => parseConfigFiles(configPath, projectPath)),
     skills: safeCall(() => parseSkills(configPath)),
     agents: safeCall(() => parseAgents(configPath)),
@@ -365,8 +382,13 @@ function collectProjectData(configPath, projectPath) {
     teams: [],
     plans: [],
     todos: [],
-    usage: safeCall(() => parseUsage(CLAUDE_CONFIG_DIR, 0, configPath)) || { commands: [], skills: [], agents: [], mcpCalls: [], tokenEntries: [], promptStats: [], latencyEntries: [], dailyActivity: [] },
   };
+
+  // Async usage parser
+  let usage;
+  try { usage = await parseUsage(CLAUDE_CONFIG_DIR, 0, configPath); } catch { usage = emptyUsage; }
+
+  return { ...syncData, usage };
 }
 
 /**

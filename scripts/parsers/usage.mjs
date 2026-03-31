@@ -1,6 +1,23 @@
 // usage.mjs — history, transcript, stats-cache parser
 import fs from 'fs';
+import fsp from 'fs/promises';
 import path from 'path';
+
+/**
+ * Run async functions in parallel with concurrency limit
+ */
+async function parallelMap(items, fn, concurrency = 10) {
+  const results = [];
+  let index = 0;
+  async function worker() {
+    while (index < items.length) {
+      const i = index++;
+      results[i] = await fn(items[i]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
+  return results;
+}
 
 // Built-in Claude CLI slash commands (to be filtered out)
 const BUILTIN_COMMANDS = new Set([
@@ -49,12 +66,12 @@ function calcCutoff(days) {
 /**
  * Parse user commands from history.jsonl
  */
-function parseCommands(configDir, cutoffMs) {
+async function parseCommands(configDir, cutoffMs) {
   const histPath = path.join(configDir, 'history.jsonl');
   if (!fs.existsSync(histPath)) return [];
 
   const commands = [];
-  const raw = fs.readFileSync(histPath, 'utf8');
+  const raw = await fsp.readFile(histPath, 'utf8');
 
   for (const line of raw.split('\n')) {
     const trimmed = line.trim();
@@ -86,14 +103,14 @@ function parseCommands(configDir, cutoffMs) {
  * @param {number} cutoffMs
  * @returns {{ skills: Array, agents: Array }}
  */
-function parseTranscriptFile(jsonlPath, cutoffMs) {
+async function parseTranscriptFile(jsonlPath, cutoffMs) {
   const skills = [];
   const agents = [];
   const mcpCalls = [];
   const tokenEntries = [];
   let raw;
   try {
-    raw = fs.readFileSync(jsonlPath, 'utf8');
+    raw = await fsp.readFile(jsonlPath, 'utf8');
   } catch {
     return { skills, agents, mcpCalls, tokenEntries };
   }
@@ -211,69 +228,47 @@ function parseTranscriptFile(jsonlPath, cutoffMs) {
  * Pass 1: fast filtering by file mtime
  * Pass 2: precise filtering by in-file timestamp
  */
-function parseTranscripts(configDir, cutoffMs) {
+async function parseTranscripts(configDir, cutoffMs) {
   const projectsDir = path.join(configDir, 'projects');
-  if (!fs.existsSync(projectsDir)) return { skills: [], agents: [] };
-
-  const allSkills = [];
-  const allAgents = [];
-  const allMcpCalls = [];
-  const allTokenEntries = [];
-  const allPromptStats = [];
-  const allLatencyEntries = [];
+  if (!fs.existsSync(projectsDir)) return { skills: [], agents: [], mcpCalls: [], tokenEntries: [], promptStats: [], latencyEntries: [] };
 
   // Subtract one day from cutoffMs for mtime filter margin
   const mtimeCutoff = cutoffMs ? cutoffMs - 24 * 60 * 60 * 1000 : 0;
 
+  // Phase 1: Collect all candidate file paths (sync — fast directory scan)
+  const filePaths = [];
   for (const projectDir of fs.readdirSync(projectsDir, { withFileTypes: true })) {
     if (!projectDir.isDirectory()) continue;
 
     const projPath = path.join(projectsDir, projectDir.name);
     let files;
-    try {
-      files = fs.readdirSync(projPath, { withFileTypes: true });
-    } catch {
-      continue;
-    }
+    try { files = fs.readdirSync(projPath, { withFileTypes: true }); } catch { continue; }
 
     for (const file of files) {
       if (!file.isFile() || !file.name.endsWith('.jsonl')) continue;
-
       const filePath = path.join(projPath, file.name);
-
-      // Pass 1 filter: file mtime
       if (mtimeCutoff) {
-        try {
-          const stat = fs.statSync(filePath);
-          if (stat.mtimeMs < mtimeCutoff) continue;
-        } catch {
-          continue;
-        }
+        try { if (fs.statSync(filePath).mtimeMs < mtimeCutoff) continue; } catch { continue; }
       }
-
-      // Pass 2 filter: in-file timestamp (handled inside parseTranscriptFile)
-      const { skills, agents, mcpCalls, tokenEntries, promptStats, latencyEntries } = parseTranscriptFile(filePath, cutoffMs);
-      allSkills.push(...skills);
-      allAgents.push(...agents);
-      allMcpCalls.push(...mcpCalls);
-      allTokenEntries.push(...tokenEntries);
-      allPromptStats.push(...promptStats);
-      allLatencyEntries.push(...latencyEntries);
+      filePaths.push(filePath);
     }
   }
 
-  return { skills: allSkills, agents: allAgents, mcpCalls: allMcpCalls, tokenEntries: allTokenEntries, promptStats: allPromptStats, latencyEntries: allLatencyEntries };
+  // Phase 2: Parse all files in parallel
+  const results = await parallelMap(filePaths, fp => parseTranscriptFile(fp, cutoffMs));
+
+  return mergeTranscriptResults(results);
 }
 
 /**
  * Parse dailyActivity from stats-cache.json
  */
-function parseDailyActivity(configDir, cutoffMs) {
+async function parseDailyActivity(configDir, cutoffMs) {
   const cachePath = path.join(configDir, 'stats-cache.json');
   if (!fs.existsSync(cachePath)) return [];
 
   try {
-    const data = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
+    const data = JSON.parse(await fsp.readFile(cachePath, 'utf8'));
     const activities = data.dailyActivity ?? [];
 
     if (!cutoffMs) return activities;
@@ -298,19 +293,34 @@ function parseDailyActivity(configDir, cutoffMs) {
  *   dailyActivity: Array<{date, messageCount, sessionCount, toolCallCount}>,
  * }}
  */
-export function parseUsage(configDir, days = 0, projectDir = null) {
+/**
+ * Merge multiple transcript parse results into one
+ */
+function mergeTranscriptResults(results) {
+  const merged = { skills: [], agents: [], mcpCalls: [], tokenEntries: [], promptStats: [], latencyEntries: [] };
+  for (const r of results) {
+    if (r.skills) merged.skills.push(...r.skills);
+    if (r.agents) merged.agents.push(...r.agents);
+    if (r.mcpCalls) merged.mcpCalls.push(...r.mcpCalls);
+    if (r.tokenEntries) merged.tokenEntries.push(...r.tokenEntries);
+    if (r.promptStats) merged.promptStats.push(...r.promptStats);
+    if (r.latencyEntries) merged.latencyEntries.push(...r.latencyEntries);
+  }
+  return merged;
+}
+
+export async function parseUsage(configDir, days = 0, projectDir = null) {
   const cutoffMs = calcCutoff(days);
 
-  const commands = parseCommands(configDir, cutoffMs);
-  let transcriptResult;
-  if (projectDir) {
-    // Project-specific: parse only the project's transcript directory
-    transcriptResult = parseProjectTranscripts(projectDir, cutoffMs);
-  } else {
-    transcriptResult = parseTranscripts(configDir, cutoffMs);
-  }
+  // Run commands, transcripts, and dailyActivity in parallel
+  const [commands, transcriptResult, dailyActivity] = await Promise.all([
+    parseCommands(configDir, cutoffMs),
+    projectDir
+      ? parseProjectTranscripts(projectDir, cutoffMs)
+      : parseTranscripts(configDir, cutoffMs),
+    parseDailyActivity(configDir, cutoffMs),
+  ]);
   const { skills, agents, mcpCalls, tokenEntries, promptStats, latencyEntries } = transcriptResult;
-  const dailyActivity = parseDailyActivity(configDir, cutoffMs);
 
   return { commands, skills, agents, mcpCalls, tokenEntries, promptStats, latencyEntries, dailyActivity };
 }
@@ -318,21 +328,14 @@ export function parseUsage(configDir, days = 0, projectDir = null) {
 /**
  * Parse transcripts from a single project directory only
  */
-function parseProjectTranscripts(projDirPath, cutoffMs) {
-  const allSkills = [];
-  const allAgents = [];
-  const allMcpCalls = [];
-  const allTokenEntries = [];
-  const allPromptStats = [];
-  const allLatencyEntries = [];
-
-  if (!fs.existsSync(projDirPath)) {
-    return { skills: allSkills, agents: allAgents, mcpCalls: allMcpCalls, tokenEntries: allTokenEntries, promptStats: allPromptStats, latencyEntries: allLatencyEntries };
-  }
+async function parseProjectTranscripts(projDirPath, cutoffMs) {
+  const empty = { skills: [], agents: [], mcpCalls: [], tokenEntries: [], promptStats: [], latencyEntries: [] };
+  if (!fs.existsSync(projDirPath)) return empty;
 
   const mtimeCutoff = cutoffMs ? cutoffMs - 24 * 60 * 60 * 1000 : 0;
 
-  // Parse JSONL files in the project directory and subagents/
+  // Phase 1: Collect all candidate file paths (sync — fast directory scan)
+  const filePaths = [];
   const dirs = [projDirPath, path.join(projDirPath, 'subagents')];
   for (const dir of dirs) {
     if (!fs.existsSync(dir)) continue;
@@ -345,16 +348,10 @@ function parseProjectTranscripts(projDirPath, cutoffMs) {
       if (mtimeCutoff) {
         try { if (fs.statSync(filePath).mtimeMs < mtimeCutoff) continue; } catch { continue; }
       }
-      const { skills, agents, mcpCalls, tokenEntries, promptStats, latencyEntries } = parseTranscriptFile(filePath, cutoffMs);
-      allSkills.push(...skills);
-      allAgents.push(...agents);
-      allMcpCalls.push(...mcpCalls);
-      allTokenEntries.push(...tokenEntries);
-      allPromptStats.push(...promptStats);
-      allLatencyEntries.push(...latencyEntries);
+      filePaths.push(filePath);
     }
 
-    // Also check session subdirectories (e.g., {sessionId}/subagents/)
+    // Also check session subdirectories
     try {
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
         if (!entry.isDirectory()) continue;
@@ -367,17 +364,14 @@ function parseProjectTranscripts(projDirPath, cutoffMs) {
           if (mtimeCutoff) {
             try { if (fs.statSync(fp).mtimeMs < mtimeCutoff) continue; } catch { continue; }
           }
-          const res = parseTranscriptFile(fp, cutoffMs);
-          allSkills.push(...res.skills);
-          allAgents.push(...res.agents);
-          allMcpCalls.push(...res.mcpCalls);
-          allTokenEntries.push(...res.tokenEntries);
-          allPromptStats.push(...res.promptStats);
-          allLatencyEntries.push(...res.latencyEntries);
+          filePaths.push(fp);
         }
       }
     } catch { /* skip */ }
   }
 
-  return { skills: allSkills, agents: allAgents, mcpCalls: allMcpCalls, tokenEntries: allTokenEntries, promptStats: allPromptStats, latencyEntries: allLatencyEntries };
+  // Phase 2: Parse all files in parallel
+  const results = await parallelMap(filePaths, fp => parseTranscriptFile(fp, cutoffMs));
+
+  return mergeTranscriptResults(results);
 }
