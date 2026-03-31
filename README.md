@@ -36,6 +36,12 @@ claude plugin install oh-my-hi
 
 > Run the same commands to update to the latest version.
 
+> **⚠️ Update caveat:** Due to a [known issue](https://github.com/anthropics/claude-code/issues/37252) in Claude Code's plugin system, `plugin install` may not detect new versions from the cached marketplace. If the update is not applied, pull the marketplace manually first:
+> ```bash
+> git -C "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/marketplaces/oh-my-hi" pull origin main
+> ```
+> Then run the install command again.
+
 ## Usage
 
 Run in Claude Code:

@@ -165,6 +165,7 @@
   "helpInstallDesc": "Run the same commands to install or update to the latest version:",
   "helpUpdateCli": "From the command line",
   "helpUpdateSession": "Claude Code (in-session)",
+  "helpUpdateCaveat": "⚠️ If the update is not applied, the plugin system may be using a cached marketplace. Run <code>git -C \"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/marketplaces/oh-my-hi\" pull origin main</code> first, then reinstall.",
   "helpParams": "Parameters",
   "helpParamDefault": "Parse and generate data, build web-ui, then open automatically in browser",
   "helpParamDataOnly": "Regenerate data + web-ui without opening a new browser tab.<br>💡 If you've bookmarked the generated local file, just refresh the page to see the latest data.",

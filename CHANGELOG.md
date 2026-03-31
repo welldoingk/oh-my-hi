@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.2] - 2026-03-31
+
+### Added
+- Update caveat note in README and Help page for known plugin cache issue
+- Use `${CLAUDE_CONFIG_DIR:-$HOME/.claude}` for cross-environment compatibility
+
 ## [0.2.1] - 2026-03-31
 
 ### Changed
