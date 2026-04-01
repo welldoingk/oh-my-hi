@@ -1,8 +1,7 @@
 {
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "oh-my-hi",
-  "metadata": {
-    "description": "Claude Code harness insights dashboard"
-  },
+  "description": "Claude Code harness insights dashboard",
   "owner": {
     "name": "Jae Sung Park",
     "email": "alberto.park@gmail.com"

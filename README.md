@@ -31,7 +31,7 @@ claude plugin install oh-my-hi
 
 ```bash
 /plugin marketplace add netil/oh-my-hi
-/plugin install oh-my-hi@oh-my-hi-marketplace
+/plugin install oh-my-hi@oh-my-hi
 ```
 
 > Run the same commands to update to the latest version.
