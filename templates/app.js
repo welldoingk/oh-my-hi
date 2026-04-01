@@ -2362,7 +2362,7 @@
       + '$ claude plugin install oh-my-hi\n\n'
       + '<span style="color:#6c757d"># ' + t('helpUpdateSession') + '</span>\n'
       + '/plugin marketplace add netil/oh-my-hi\n'
-      + '/plugin install oh-my-hi@oh-my-hi-marketplace'
+      + '/plugin install oh-my-hi@oh-my-hi'
       + '</code></pre>'
       + '<p style="margin:10px 0 0;font-size:12px;color:var(--text-secondary);line-height:1.6">' + t('helpUpdateCaveat') + '</p>'
       + '</div></div>';
