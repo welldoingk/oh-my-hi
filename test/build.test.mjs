@@ -73,6 +73,11 @@ describe('Build', () => {
     it('should have configDir', () => {
       assert.ok(typeof data.configDir === 'string');
     });
+
+    it('should have _devBuild flag when built from git repo', () => {
+      // Test runs from the git repo, so _devBuild should be true
+      assert.equal(data._devBuild, true);
+    });
   });
 
   describe('index.html', () => {

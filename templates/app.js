@@ -212,6 +212,14 @@
       }
     });
 
+    // Dev build badge
+    if (DATA._devBuild) {
+      const badge = document.createElement('div');
+      badge.className = 'dev-build-badge';
+      badge.textContent = 'DEV BUILD';
+      document.body.appendChild(badge);
+    }
+
     // Apply initial hash
     if (window.location.hash) {
       applyHash();
@@ -824,14 +832,43 @@
       + '<button class="period-btn' + (currentPeriod === 30 && !customDateRange ? ' active' : '') + '" data-period="30" data-tooltip="' + tip30 + '">30d</button>'
       + '<button class="period-btn' + (currentPeriod === 0 && !customDateRange ? ' active' : '') + '" data-period="0" data-tooltip="' + tipAll + '">' + t('all') + '</button>'
       + '<button class="period-btn period-btn-calendar' + (customDateRange ? ' active' : '') + '" data-period="custom">📅</button>'
-      + (!customDateRange && currentPeriod !== 0 ? '<button class="period-btn period-btn-compare' + (compareMode ? ' active' : '') + '" data-period="compare" data-tooltip="' + t('compareToggle') + '">⚖</button>' : '')
+      + '<button class="period-btn period-btn-compare' + (compareMode && !customDateRange && currentPeriod !== 0 ? ' active' : '') + (customDateRange || currentPeriod === 0 ? ' disabled' : '') + '" data-period="compare" data-tooltip="' + t('compareToggle') + '"' + (customDateRange || currentPeriod === 0 ? ' disabled' : '') + '>⚖️</button>'
       + '</div>'
       + (rangeText ? '<div class="sidebar-period-range">' + rangeText + '</div>' : '');
 
+    // Bind period button tooltips (JS-based for viewport-aware positioning)
+    const sidebarEl = document.querySelector('.sidebar');
+    const sidebarWidth = sidebarEl ? sidebarEl.offsetWidth : 260;
+    sidebarPeriod.querySelectorAll('.period-btn[data-tooltip]').forEach((btn) => {
+      let tipEl = null;
+      btn.addEventListener('mouseenter', () => {
+        const tip = btn.dataset.tooltip;
+        if (!tip || btn.classList.contains('active')) return;
+        tipEl = document.createElement('div');
+        tipEl.className = 'period-tooltip';
+        tipEl.textContent = tip;
+        document.body.appendChild(tipEl);
+        const btnRect = btn.getBoundingClientRect();
+        const tipW = tipEl.offsetWidth;
+        // Center on button
+        let left = btnRect.left + (btnRect.width - tipW) / 2;
+        // Clamp: left edge >= 4px, right edge <= sidebar width - 4px
+        if (left < 4) left = 4;
+        if (left + tipW > sidebarWidth - 4) left = sidebarWidth - 4 - tipW;
+        tipEl.style.left = left + 'px';
+        tipEl.style.top = (btnRect.top - tipEl.offsetHeight - 4) + 'px';
+      });
+      btn.addEventListener('mouseleave', () => {
+        if (tipEl) { tipEl.remove(); tipEl = null; }
+      });
+    });
+
     // Bind period buttons
+    const removePeriodTooltips = () => { document.querySelectorAll('.period-tooltip').forEach((el) => el.remove()); };
     sidebarPeriod.querySelectorAll('.period-btn').forEach((btn) => {
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
+        removePeriodTooltips();
         const val = btn.dataset.period;
         if (val === 'custom') {
           showCalendarPicker();

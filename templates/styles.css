@@ -514,13 +514,22 @@ body.dark .page-header .page-desc {
 }
 
 .sidebar-period .period-btn[data-tooltip]:hover::after {
+  display: none;
+}
+
+.period-tooltip {
   position: absolute;
-  bottom: 100%;
-  left: 0;
-  right: auto;
-  transform: none;
-  margin-bottom: 4px;
+  background: var(--text);
+  color: #fff;
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
   z-index: 1000;
+  pointer-events: none;
+}
+body.dark .period-tooltip {
+  color: #1a1b1e;
 }
 
 .period-btn[data-tooltip=""]:hover::after {
@@ -2010,7 +2019,32 @@ body.dark .bb-tooltip .value {
   font-weight: 600;
 }
 .period-btn-compare {
-  font-size: 11px;
+  font-size: 20px;
+  line-height: 1;
+  padding: 2px 6px;
+}
+.period-btn-compare:disabled,
+.period-btn-compare.disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* ── Dev Build Badge ── */
+.dev-build-badge {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  background: #dc2626;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  padding: 3px 10px;
+  border-radius: 3px;
+  z-index: 9999;
+  pointer-events: none;
+  opacity: 0.85;
 }
 
 /* ── Responsive ── */

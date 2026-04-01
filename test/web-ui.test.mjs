@@ -96,6 +96,39 @@ describe('Web UI — Templates', () => {
       assert.ok(js.includes('compareMode'));
       assert.ok(js.includes('comparePrev'));
     });
+
+    it('should have dev build badge support', () => {
+      assert.ok(js.includes('_devBuild'));
+      assert.ok(js.includes('dev-build-badge'));
+    });
+
+    it('should have JS-based period tooltip with viewport clamping', () => {
+      assert.ok(js.includes('period-tooltip'));
+      assert.ok(js.includes('removePeriodTooltips'));
+    });
+
+    it('should have compare button always rendered with disabled state', () => {
+      assert.ok(js.includes("data-period=\"compare\""));
+      // Compare button should use disabled attribute when not applicable
+      assert.ok(js.includes("' disabled'"));
+    });
+
+    it('should render cost trend as 3 separate charts', () => {
+      assert.ok(js.includes('cost-trend-daily'));
+      assert.ok(js.includes('cost-trend-weekly'));
+      assert.ok(js.includes('cost-trend-monthly'));
+      assert.ok(js.includes('function drawCostTrendCharts'));
+    });
+
+    it('should have session back button pointing to tokens-session', () => {
+      assert.ok(js.includes("'tokens-session'"));
+      assert.ok(js.includes("sessionBackToSession"));
+    });
+
+    it('should show day of week in session table', () => {
+      assert.ok(js.includes('dayNames'));
+      assert.ok(js.includes("dow"));
+    });
   });
 
   describe('styles.css', () => {
@@ -126,6 +159,20 @@ describe('Web UI — Templates', () => {
       assert.ok(css.includes('.session-timeline'));
       assert.ok(css.includes('.session-back-btn'));
       assert.ok(css.includes('.session-badge'));
+    });
+
+    it('should have dev build badge style', () => {
+      assert.ok(css.includes('.dev-build-badge'));
+    });
+
+    it('should have JS tooltip and compare disabled styles', () => {
+      assert.ok(css.includes('.period-tooltip'));
+      assert.ok(css.includes('.period-btn-compare:disabled'));
+    });
+
+    it('should have cost trend grid styles', () => {
+      assert.ok(css.includes('.cost-trend-grid'));
+      assert.ok(css.includes('.cost-trend-label'));
     });
 
     it('should have responsive styles', () => {

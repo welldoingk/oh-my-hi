@@ -174,6 +174,7 @@ async function main() {
   const taskCategories = buildTaskCategories(scopeData);
 
   // 6) Build full data object
+  const isDevBuild = fs.existsSync(path.join(ROOT, '.git'));
   const data = {
     scopes,
     scopeData,
@@ -181,6 +182,7 @@ async function main() {
     generatedAt: new Date().toISOString(),
     configDir: CLAUDE_CONFIG_DIR,
     systemLocale,
+    _devBuild: isDevBuild || undefined,
   };
   const dataOnly = args.includes('--data-only');
   const indexPath = path.join(OUTPUT, 'index.html');
