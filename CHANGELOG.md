@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.3.0] - 2026-04-01
+
+### Added
+- **Cost trend charts**: Daily/weekly/monthly cost trend with area gradient (Token: Cost page)
+- **Token budget**: Configurable daily/weekly/monthly spending thresholds with progress bars and chart grid lines (localStorage-persisted)
+- **Session deep dive**: Clickable top sessions table → detailed view with timeline, models, skills/agents/MCP used (`#session/{id}`)
+- **Period comparison**: Compare toggle (⚖) overlays previous period data on stat cards and trend chart
+- **Unused items cleanup**: MCP servers added to unused detection; cleanup tip shown when >3 unused items
+- **Cache efficiency tips**: Contextual insight cards for low hit rate, high creation/read ratio, no-cache sessions
+- **Test suite**: 55 tests covering build output, web-ui templates, plugin structure, and parameter behavior (`npm test`)
+- **CLAUDE.md**: Project-level instructions for contributors and AI assistants
+
+### Changed
+- Token sub-menu restructured into 3 pages: Cost (`#tokens-cost`), Prompt (`#tokens-prompt`), Session (`#tokens-session`)
+- Task category and tool context charts moved from Analysis to Token Overview
+- Old `#tokens-analysis` route auto-redirects to `#tokens-prompt`
+- Session detail sidebar keeps Session menu highlighted
+
+### Fixed
+- Marketplace plugin discovery: added `.claude-plugin/plugin.json`, aligned `marketplace.json` with official schema
+- Install command in README and Help: `oh-my-hi@oh-my-hi-marketplace` → `oh-my-hi@oh-my-hi`
+- Budget save/clear no longer scrolls page to top
+
 ## [0.2.4] - 2026-04-01
 
 ### Fixed

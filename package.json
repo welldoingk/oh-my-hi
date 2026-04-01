@@ -1,6 +1,6 @@
 {
   "name": "oh-my-hi",
-  "version": "0.2.4",
+  "version": "0.3.0",
   "description": "Claude Code harness insights dashboard",
   "repository": {
     "type": "git",
@@ -16,6 +16,10 @@
     "insights",
     "analytics"
   ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "build": "node scripts/generate-dashboard.mjs --data-only"
+  },
   "homepage": "https://github.com/netil/oh-my-hi",
   "dependencies": {
     "billboard.js": "^3.18.0",

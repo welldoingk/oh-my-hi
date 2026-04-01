@@ -138,9 +138,12 @@ Built at build time in `generate-dashboard.mjs`. Persisted in `task-categories.j
 
 | Page | Hash | Content |
 |------|------|---------|
-| Harness Overview | `#overview` | Stats cards, category distribution donut, daily trend, popular skills, activity heatmap, recent activity, insights, unused items |
-| Token Overview | `#tokens` | Token stats, model distribution donut, trend chart, activity heatmap, model table, insights |
-| Token Analysis | `#tokens-analysis` | Task category bar, tool context bar, prompt stats, response latency, session analysis, hourly distribution, cache efficiency |
+| Harness Overview | `#overview` | Stats cards, category distribution donut, daily trend, popular skills, activity heatmap, recent activity, insights, unused items (incl. MCP servers + cleanup tips) |
+| Token Overview | `#tokens` | Token stats, model distribution donut, trend chart, activity heatmap, task category bar, tool context bar, model table, insights |
+| Token: Cost | `#tokens-cost` | Cost cards, budget config + progress bars, cost trend charts (daily/weekly/monthly with budget grid lines), cost formula |
+| Token: Prompt | `#tokens-prompt` | Prompt stats, response latency, hourly distribution, cache efficiency + tips |
+| Token: Session | `#tokens-session` | Session stats, top sessions table (clickable) |
+| Session Detail | `#session/{id}` | Session stat cards, models/skills/agents/MCP badges, activity timeline table |
 | Structure | `#structure` | Component flow SVG, file tree |
 | Help | `#help` | Parameters table, data parsing reference, token/activity reference |
 | Category Overview | `#{categoryKey}` | Total count, usage stats, all items list |

@@ -105,6 +105,9 @@
   let customDateRange = null; // { start: Date, end: Date }
   const expandedCategories = {};
   let searchQuery = '';
+  let tokenBudget = JSON.parse(localStorage.getItem('harness-budget') || 'null');
+  let currentSessionId = null;
+  let compareMode = localStorage.getItem('harness-compare') === 'true';
 
   // ── DOM refs ──
   const scopeSelect = document.getElementById('scope-select');
@@ -244,6 +247,9 @@
 
   // ── History / Hash ──
   function getHash() {
+    if (currentView === 'session' && currentSessionId) {
+      return '#session/' + encodeURIComponent(currentSessionId);
+    }
     if (currentDetail) {
       return '#' + currentDetail.category + '/' + encodeURIComponent(currentDetail.name);
     }
@@ -270,10 +276,15 @@
       currentView = view;
       currentDetail = { category: view, name: name };
       expandedCategories[view] = true;
-    } else if (view === 'overview' || view === 'structure' || view === 'tokens' || view === 'tokens-analysis' || view === 'help') {
-      currentView = view;
+    } else if (view === 'session' && parts.length > 1) {
+      currentView = 'session';
+      currentSessionId = decodeURIComponent(parts.slice(1).join('/'));
       currentDetail = null;
-      if (view === 'tokens' || view === 'tokens-analysis') expandedCategories._tokens = true;
+      expandedCategories._tokens = true;
+    } else if (view === 'overview' || view === 'structure' || view === 'tokens' || view === 'tokens-cost' || view === 'tokens-prompt' || view === 'tokens-session' || view === 'tokens-analysis' || view === 'help') {
+      currentView = view === 'tokens-analysis' ? 'tokens-prompt' : view;
+      currentDetail = null;
+      if (view.startsWith('tokens')) expandedCategories._tokens = true;
     } else {
       // Check if it's a category key
       const isCat = CATEGORIES.some((c) => { return c.key === view; });
@@ -651,9 +662,8 @@
     let html = '';
 
     html += navItem('overview', '📊', t('overview'), null, currentView === 'overview' && !currentDetail);
-    const isTokensArea = currentView === 'tokens' || currentView === 'tokens-analysis';
-    // Auto-expand on tokens-analysis entry, manual toggle otherwise
-    if (currentView === 'tokens-analysis') expandedCategories._tokens = true;
+    const isTokensArea = currentView === 'tokens' || currentView === 'tokens-cost' || currentView === 'tokens-prompt' || currentView === 'tokens-session' || currentView === 'session';
+    if (isTokensArea) expandedCategories._tokens = true;
     const isTokensExpanded = expandedCategories._tokens || false;
     html += '<div class="nav-item' + (isTokensArea ? ' active' : '') + '" data-action="toggle-tokens">'
       + '<span class="icon">🪙</span>'
@@ -662,7 +672,9 @@
       + '</div>';
     if (isTokensExpanded) {
       html += '<div class="nav-sub">'
-        + navItem('tokens-analysis', '📋', t('tokenAnalysis'), null, currentView === 'tokens-analysis')
+        + navItem('tokens-cost', '💰', t('tokensCost'), null, currentView === 'tokens-cost')
+        + navItem('tokens-prompt', '💬', t('tokensPrompt'), null, currentView === 'tokens-prompt')
+        + navItem('tokens-session', '📋', t('tokensSession'), null, currentView === 'tokens-session' || currentView === 'session')
         + '</div>';
     }
     html += navItem('structure', '🗂️', t('structure'), null, currentView === 'structure' && !currentDetail);
@@ -760,8 +772,14 @@
       renderOverview();
     } else if (currentView === 'tokens') {
       renderTokensPage();
-    } else if (currentView === 'tokens-analysis') {
-      renderTokensAnalysis();
+    } else if (currentView === 'tokens-cost') {
+      renderTokensCost();
+    } else if (currentView === 'tokens-prompt') {
+      renderTokensPrompt();
+    } else if (currentView === 'tokens-session') {
+      renderTokensSession();
+    } else if (currentView === 'session') {
+      renderSessionDetail();
     } else if (currentView === 'structure') {
       renderStructure();
     } else if (currentView === 'help') {
@@ -806,6 +824,7 @@
       + '<button class="period-btn' + (currentPeriod === 30 && !customDateRange ? ' active' : '') + '" data-period="30" data-tooltip="' + tip30 + '">30d</button>'
       + '<button class="period-btn' + (currentPeriod === 0 && !customDateRange ? ' active' : '') + '" data-period="0" data-tooltip="' + tipAll + '">' + t('all') + '</button>'
       + '<button class="period-btn period-btn-calendar' + (customDateRange ? ' active' : '') + '" data-period="custom">📅</button>'
+      + (!customDateRange && currentPeriod !== 0 ? '<button class="period-btn period-btn-compare' + (compareMode ? ' active' : '') + '" data-period="compare" data-tooltip="' + t('compareToggle') + '">⚖</button>' : '')
       + '</div>'
       + (rangeText ? '<div class="sidebar-period-range">' + rangeText + '</div>' : '');
 
@@ -816,6 +835,13 @@
         const val = btn.dataset.period;
         if (val === 'custom') {
           showCalendarPicker();
+          return;
+        }
+        if (val === 'compare') {
+          compareMode = !compareMode;
+          localStorage.setItem('harness-compare', String(compareMode));
+          renderSidebarPeriod();
+          renderContent();
           return;
         }
         customDateRange = null;
@@ -981,8 +1007,8 @@
   }
 
   function renderTokensPage() {
-    let usage = getUsage();
-    let days = customDateRange ? 0 : currentPeriod;
+    const usage = getUsage();
+    const days = customDateRange ? 0 : currentPeriod;
     const allTokenEntries = usage.tokenEntries || [];
     const tokenEntries = filterByPeriod(allTokenEntries, 'timestamp', days);
 
@@ -993,13 +1019,25 @@
       totalOutput += e.outputTokens || 0;
       totalCache += (e.cacheRead || 0) + (e.cacheCreation || 0);
     });
-    let totalAll = totalInput + totalOutput + totalCache;
+    const totalAll = totalInput + totalOutput + totalCache;
 
-    // Changes
-    let changeAll = calcTokenChange(allTokenEntries, days, (e) => { return (e.rawInput || 0) + (e.outputTokens || 0) + (e.cacheRead || 0) + (e.cacheCreation || 0); });
-    const changeInput = calcTokenChange(allTokenEntries, days, (e) => { return e.rawInput || 0; });
-    const changeOutput = calcTokenChange(allTokenEntries, days, (e) => { return e.outputTokens || 0; });
-    const changeCache = calcTokenChange(allTokenEntries, days, (e) => { return (e.cacheRead || 0) + (e.cacheCreation || 0); });
+    const changeAll = calcTokenChange(allTokenEntries, days, (e) => (e.rawInput || 0) + (e.outputTokens || 0) + (e.cacheRead || 0) + (e.cacheCreation || 0));
+    const changeInput = calcTokenChange(allTokenEntries, days, (e) => e.rawInput || 0);
+    const changeOutput = calcTokenChange(allTokenEntries, days, (e) => e.outputTokens || 0);
+    const changeCache = calcTokenChange(allTokenEntries, days, (e) => (e.cacheRead || 0) + (e.cacheCreation || 0));
+
+    // Compare mode
+    const canCompare = compareMode && !customDateRange && days > 0;
+    let prevTokenEntries = [];
+    let prevInput = 0, prevOutput = 0, prevCache = 0, prevAll = 0;
+    if (canCompare) {
+      const now = new Date();
+      const curStart = new Date(now); curStart.setDate(curStart.getDate() - (days - 1)); curStart.setHours(0, 0, 0, 0);
+      const prevStart = new Date(curStart); prevStart.setDate(prevStart.getDate() - days);
+      prevTokenEntries = allTokenEntries.filter((e) => { const d = new Date(e.timestamp); return d >= prevStart && d < curStart; });
+      prevTokenEntries.forEach((e) => { prevInput += e.rawInput || 0; prevOutput += e.outputTokens || 0; prevCache += (e.cacheRead || 0) + (e.cacheCreation || 0); });
+      prevAll = prevInput + prevOutput + prevCache;
+    }
 
     const siOpts = { si: true };
     let html = '<div class="page-header">'
@@ -1008,74 +1046,24 @@
       + '</div>'
       + renderPeriodFilter()
       + '<div class="card-grid">'
-      + statCard(t('totalTokens'), totalAll, changeAll, siOpts)
-      + statCard(t('inputTokens'), totalInput, changeInput, siOpts)
-      + statCard(t('outputTokens'), totalOutput, changeOutput, siOpts)
-      + statCard(t('cacheTokens'), totalCache, changeCache, siOpts)
+      + statCard(t('totalTokens'), totalAll, changeAll, canCompare ? { si: true, compare: { label: t('comparePrev'), value: fmtCompact(prevAll) } } : siOpts)
+      + statCard(t('inputTokens'), totalInput, changeInput, canCompare ? { si: true, compare: { label: t('comparePrev'), value: fmtCompact(prevInput) } } : siOpts)
+      + statCard(t('outputTokens'), totalOutput, changeOutput, canCompare ? { si: true, compare: { label: t('comparePrev'), value: fmtCompact(prevOutput) } } : siOpts)
+      + statCard(t('cacheTokens'), totalCache, changeCache, canCompare ? { si: true, compare: { label: t('comparePrev'), value: fmtCompact(prevCache) } } : siOpts)
       + '</div>';
 
-    // Prep: modelMap + cost
-    let totalCost = 0;
-    const costDailyMap = {};
+    // Model map
     const modelMapForInsights = {};
     tokenEntries.forEach((e) => {
-      const cost = calcEntryCost(e);
-      totalCost += cost;
-      let short = (e.model || 'unknown').replace(/^claude-/, '').replace(/-\d{8,}$/, '');
+      const short = (e.model || 'unknown').replace(/^claude-/, '').replace(/-\d{8,}$/, '');
       if (!modelMapForInsights[short]) modelMapForInsights[short] = { input: 0, output: 0, cache: 0, cacheRead: 0, cacheCreation: 0, cost: 0 };
       modelMapForInsights[short].input += e.rawInput || 0;
       modelMapForInsights[short].output += e.outputTokens || 0;
       modelMapForInsights[short].cache += (e.cacheRead || 0) + (e.cacheCreation || 0);
-      modelMapForInsights[short].cacheRead += e.cacheRead || 0;
-      modelMapForInsights[short].cacheCreation += e.cacheCreation || 0;
-      modelMapForInsights[short].cost += cost;
-      // daily cost
-      const d = typeof e.timestamp === 'number' ? new Date(e.timestamp) : new Date(e.timestamp);
-      const dk = d.toISOString().substring(0, 10);
-      if (dk) costDailyMap[dk] = (costDailyMap[dk] || 0) + cost;
+      modelMapForInsights[short].cost += calcEntryCost(e);
     });
-    const changeCost = calcTokenChange(allTokenEntries, days, (e) => calcEntryCost(e));
-    const costDays = Object.keys(costDailyMap).length;
-    const dailyAvgCost = costDays > 0 ? totalCost / costDays : 0;
 
-    // Cost cards: total, daily avg, top models
-    const modelsByCost = Object.entries(modelMapForInsights).sort((a, b) => b[1].cost - a[1].cost);
-    html += '<div style="margin-top:16px;margin-bottom:4px;font-size:13px;color:var(--text-secondary)">' + t('costCardNote') + '</div>'
-      + '<div class="card-grid">'
-      + statCard(t('totalCost'), fmtCost(totalCost), changeCost, { raw: true })
-      + statCard(t('dailyAvgCost'), fmtCost(dailyAvgCost), null, { raw: true, badge: t('activeDaysBadge', costDays) });
-    modelsByCost.slice(0, 3).forEach((entry) => {
-      if (entry[1].cost > 0) {
-        const pct = totalCost > 0 ? Math.round((entry[1].cost / totalCost) * 100) : 0;
-        html += statCard(entry[0], fmtCost(entry[1].cost), null, { raw: true, badge: pct + '%' });
-      }
-    });
-    html += '</div>';
-
-    // Cost formula explanation
-    html += '<div class="section"><div class="section-title">' + t('costFormula') + '</div>'
-      + '<div class="card" style="padding:16px;overflow-x:auto">'
-      + '<div style="margin-bottom:12px;color:var(--text-secondary);font-size:13px">' + t('costFormulaDesc') + '</div>'
-      + '<div style="margin-bottom:12px;font-size:12px;color:var(--text-secondary);font-family:monospace;line-height:1.8">'
-      + t('costFormulaDetail')
-      + '</div>'
-      + '<details><summary style="cursor:pointer;font-size:13px;font-weight:600;margin-bottom:8px">' + t('costPricingTable') + '</summary>'
-      + '<table class="config-table" style="width:100%;margin-top:8px">'
-      + '<thead><tr><th>Model</th><th style="text-align:right">Input</th><th style="text-align:right">Output</th><th style="text-align:right">Cache Read</th><th style="text-align:right">Cache Write</th></tr></thead><tbody>';
-    Object.entries(MODEL_PRICING).forEach((entry) => {
-      const p = entry[1];
-      html += '<tr><td><strong>' + entry[0] + '</strong></td>'
-        + '<td style="text-align:right">$' + p.input + '</td>'
-        + '<td style="text-align:right">$' + p.output + '</td>'
-        + '<td style="text-align:right">$' + p.cacheRead + '</td>'
-        + '<td style="text-align:right">$' + p.cacheCreation + '</td></tr>';
-    });
-    html += '</tbody></table>'
-      + '<div style="margin-top:8px;font-size:12px;color:var(--text-secondary)">'
-      + t('costPricingUnit') + ' · <a href="https://www.anthropic.com/pricing" target="_blank" style="color:var(--accent)">anthropic.com/pricing</a>'
-      + '</div></details></div></div>';
-
-    // 1. Charts
+    // Charts: donut + trend
     html += '<div class="chart-row">'
       + '<div class="section chart-section chart-section-small">'
       + '<div class="section-title">' + t('modelDist') + '</div>'
@@ -1087,64 +1075,14 @@
       + '</div>'
       + '</div>';
 
-    // 2. Heatmap
-    const tokenActivityMap = buildActivityMap(tokenEntries, (e) => {
-      return (e.rawInput || 0) + (e.outputTokens || 0) + (e.cacheRead || 0) + (e.cacheCreation || 0);
-    });
+    // Heatmap
+    const tokenActivityMap = buildActivityMap(tokenEntries, (e) => (e.rawInput || 0) + (e.outputTokens || 0) + (e.cacheRead || 0) + (e.cacheCreation || 0));
     html += '<div class="section">'
       + '<div class="section-title">' + t('tokenActivity') + ' <span class="section-title-sub">' + t('tokenActivityDesc') + '</span></div>'
       + renderHeatmapFromMap(tokenActivityMap, days, t('tokenUnit'), true)
       + '</div>';
 
-    // 3. Model breakdown table
-    const modelEntries = Object.entries(modelMapForInsights).sort((a, b) => {
-      return (b[1].input + b[1].output + b[1].cache) - (a[1].input + a[1].output + a[1].cache);
-    });
-    if (modelEntries.length > 0) {
-      html += '<div class="section"><div class="section-title">' + t('tokenByModel') + '</div>'
-        + '<div class="card" style="padding:16px;overflow-x:auto"><table class="config-table" style="width:100%">'
-        + '<thead><tr><th>Model</th><th style="text-align:right">Input</th><th style="text-align:right">Output</th><th style="text-align:right">Cache</th><th style="text-align:right">Total</th><th style="text-align:right">' + t('estimatedCost') + '</th></tr></thead><tbody>';
-      let tableTotalCost = 0;
-      modelEntries.forEach((entry) => {
-        const d = entry[1], tot = d.input + d.output + d.cache;
-        tableTotalCost += d.cost || 0;
-        html += '<tr><td><strong>' + escapeHtml(entry[0]) + '</strong></td>'
-          + '<td style="text-align:right">' + fmtCompact(d.input) + '</td>'
-          + '<td style="text-align:right">' + fmtCompact(d.output) + '</td>'
-          + '<td style="text-align:right">' + fmtCompact(d.cache) + '</td>'
-          + '<td style="text-align:right"><strong>' + fmtCompact(tot) + '</strong></td>'
-          + '<td style="text-align:right">' + fmtCost(d.cost || 0) + '</td></tr>';
-      });
-      html += '<tr style="border-top:2px solid var(--border)"><td colspan="5" style="text-align:right"><strong>Total</strong></td>'
-        + '<td style="text-align:right"><strong>' + fmtCost(tableTotalCost) + '</strong></td></tr>';
-      html += '</tbody></table></div></div>';
-    }
-
-    // 4. Insights
-    html += renderTokenInsights(tokenEntries, modelMapForInsights, days);
-
-    html += '<div class="generated-at">' + t('generatedAt') + ' ' + formatDateTime(DATA.generatedAt) + ' · ' + (DATA.configDir || '') + '</div>';
-
-    content.innerHTML = html;
-    bindContentActions();
-    bindPeriodFilter();
-    drawTokenTrendChart(tokenEntries, days);
-    drawTokenModelDonut(modelMapForInsights);
-  }
-
-  // ── Tokens Analysis sub-page ──
-
-  function renderTokensAnalysis() {
-    const usage = getUsage();
-    const days = customDateRange ? 0 : currentPeriod;
-    const tokenEntries = filterByPeriod(usage.tokenEntries || [], 'timestamp', days);
-    const promptEntries = filterByPeriod(usage.promptStats || [], 'timestamp', days);
-
-    let html = '<div class="page-header">'
-      + '<h1>📋 ' + t('tokenAnalysis') + '</h1>'
-      + '</div>';
-
-    // 1. Prep data: task categories (classified at build time) & tool-level context
+    // Task categories + Tool context (moved from analysis)
     const taskCatMapping = (DATA.taskCategories && DATA.taskCategories.mapping) || {};
     const taskCatMeta = (DATA.taskCategories && DATA.taskCategories.meta) || {};
     const taskCatMap = {};
@@ -1166,7 +1104,6 @@
     });
     const contextEntries = Object.entries(contextMap).sort((a, b) => b[1].tokens - a[1].tokens).slice(0, 10);
 
-    // 2. Two rotated bar charts side by side
     html += '<div class="chart-row">'
       + '<div class="section chart-section">'
       + '<div class="section-title">' + t('taskCategory') + '</div>'
@@ -1180,7 +1117,141 @@
       + '</div>'
       + '</div>';
 
-    // 3. Prompt statistics
+    // Model breakdown table
+    const modelEntries = Object.entries(modelMapForInsights).sort((a, b) => (b[1].input + b[1].output + b[1].cache) - (a[1].input + a[1].output + a[1].cache));
+    if (modelEntries.length > 0) {
+      html += '<div class="section"><div class="section-title">' + t('tokenByModel') + '</div>'
+        + '<div class="card" style="padding:16px;overflow-x:auto"><table class="config-table" style="width:100%">'
+        + '<thead><tr><th>Model</th><th style="text-align:right">Input</th><th style="text-align:right">Output</th><th style="text-align:right">Cache</th><th style="text-align:right">Total</th><th style="text-align:right">' + t('estimatedCost') + '</th></tr></thead><tbody>';
+      let tableTotalCost = 0;
+      modelEntries.forEach((entry) => {
+        const d = entry[1], tot = d.input + d.output + d.cache;
+        tableTotalCost += d.cost || 0;
+        html += '<tr><td><strong>' + escapeHtml(entry[0]) + '</strong></td>'
+          + '<td style="text-align:right">' + fmtCompact(d.input) + '</td>'
+          + '<td style="text-align:right">' + fmtCompact(d.output) + '</td>'
+          + '<td style="text-align:right">' + fmtCompact(d.cache) + '</td>'
+          + '<td style="text-align:right"><strong>' + fmtCompact(tot) + '</strong></td>'
+          + '<td style="text-align:right">' + fmtCost(d.cost || 0) + '</td></tr>';
+      });
+      html += '<tr style="border-top:2px solid var(--border)"><td colspan="5" style="text-align:right"><strong>Total</strong></td>'
+        + '<td style="text-align:right"><strong>' + fmtCost(tableTotalCost) + '</strong></td></tr>';
+      html += '</tbody></table></div></div>';
+    }
+
+    // Insights
+    html += renderTokenInsights(tokenEntries, modelMapForInsights, days);
+
+    html += '<div class="generated-at">' + t('generatedAt') + ' ' + formatDateTime(DATA.generatedAt) + ' · ' + (DATA.configDir || '') + '</div>';
+    content.innerHTML = html;
+    bindContentActions();
+    bindPeriodFilter();
+    drawTokenTrendChart(tokenEntries, days, canCompare ? prevTokenEntries : null);
+    drawTokenModelDonut(modelMapForInsights);
+    drawRotatedBar('#task-cat-bar', taskCatEntries.map((e) => {
+      const meta = taskCatMeta[e[0]] || taskCatMeta['other'] || { icon: '📦', label: e[0] };
+      return { label: meta.icon + ' ' + (meta.label || e[0]), value: e[1].tokens };
+    }));
+    drawRotatedBar('#tool-ctx-bar', contextEntries.map((e) => ({ label: e[0], value: e[1].tokens })));
+  }
+
+  // ── Tokens Analysis sub-page ──
+
+  // ── Tokens: Cost sub-page ──
+  function renderTokensCost() {
+    const usage = getUsage();
+    const days = customDateRange ? 0 : currentPeriod;
+    const allTokenEntries = usage.tokenEntries || [];
+    const tokenEntries = filterByPeriod(allTokenEntries, 'timestamp', days);
+
+    const canCompare = compareMode && !customDateRange && days > 0;
+    let prevCost = 0;
+    if (canCompare) {
+      const now = new Date();
+      const curStart = new Date(now); curStart.setDate(curStart.getDate() - (days - 1)); curStart.setHours(0, 0, 0, 0);
+      const prevStart = new Date(curStart); prevStart.setDate(prevStart.getDate() - days);
+      allTokenEntries.forEach((e) => { const d = new Date(e.timestamp); if (d >= prevStart && d < curStart) prevCost += calcEntryCost(e); });
+    }
+
+    let totalCost = 0;
+    const costDailyMap = {};
+    const modelCostMap = {};
+    tokenEntries.forEach((e) => {
+      const cost = calcEntryCost(e);
+      totalCost += cost;
+      const d = typeof e.timestamp === 'number' ? new Date(e.timestamp) : new Date(e.timestamp);
+      const dk = d.toISOString().substring(0, 10);
+      if (dk) costDailyMap[dk] = (costDailyMap[dk] || 0) + cost;
+      const short = (e.model || 'unknown').replace(/^claude-/, '').replace(/-\d{8,}$/, '');
+      modelCostMap[short] = (modelCostMap[short] || 0) + cost;
+    });
+    const changeCost = calcTokenChange(allTokenEntries, days, (e) => calcEntryCost(e));
+    const costDays = Object.keys(costDailyMap).length;
+    const dailyAvgCost = costDays > 0 ? totalCost / costDays : 0;
+    const modelsByCost = Object.entries(modelCostMap).sort((a, b) => b[1] - a[1]);
+
+    let html = '<div class="page-header"><h1>💰 ' + t('tokensCost') + '</h1></div>'
+      + renderPeriodFilter()
+      + '<div class="card-grid">'
+      + statCard(t('totalCost'), fmtCost(totalCost), changeCost, canCompare ? { raw: true, compare: { label: t('comparePrev'), value: fmtCost(prevCost) } } : { raw: true })
+      + statCard(t('dailyAvgCost'), fmtCost(dailyAvgCost), null, { raw: true, badge: t('activeDaysBadge', costDays) });
+    modelsByCost.slice(0, 3).forEach((entry) => {
+      if (entry[1] > 0) {
+        const pct = totalCost > 0 ? Math.round((entry[1] / totalCost) * 100) : 0;
+        html += statCard(entry[0], fmtCost(entry[1]), null, { raw: true, badge: pct + '%' });
+      }
+    });
+    html += '</div>';
+
+    // Budget
+    html += renderBudgetSection(costDailyMap);
+
+    // Cost trend charts
+    html += '<div class="section">'
+      + '<div class="section-title">' + t('costTrend') + '</div>'
+      + '<div class="cost-trend-grid">'
+      + '<div class="card chart-card"><div class="cost-trend-label">' + t('budgetDaily') + '</div><div id="cost-trend-daily"></div></div>'
+      + '<div class="card chart-card"><div class="cost-trend-label">' + t('budgetWeekly') + '</div><div id="cost-trend-weekly"></div></div>'
+      + '<div class="card chart-card"><div class="cost-trend-label">' + t('budgetMonthly') + '</div><div id="cost-trend-monthly"></div></div>'
+      + '</div></div>';
+
+    // Cost formula
+    html += '<div class="section"><div class="section-title">' + t('costFormula') + '</div>'
+      + '<div class="card" style="padding:16px;overflow-x:auto">'
+      + '<div style="margin-bottom:12px;color:var(--text-secondary);font-size:13px">' + t('costFormulaDesc') + '</div>'
+      + '<div style="margin-bottom:12px;font-size:12px;color:var(--text-secondary);font-family:monospace;line-height:1.8">' + t('costFormulaDetail') + '</div>'
+      + '<details><summary style="cursor:pointer;font-size:13px;font-weight:600;margin-bottom:8px">' + t('costPricingTable') + '</summary>'
+      + '<table class="config-table" style="width:100%;margin-top:8px">'
+      + '<thead><tr><th>Model</th><th style="text-align:right">Input</th><th style="text-align:right">Output</th><th style="text-align:right">Cache Read</th><th style="text-align:right">Cache Write</th></tr></thead><tbody>';
+    Object.entries(MODEL_PRICING).forEach((entry) => {
+      const p = entry[1];
+      html += '<tr><td><strong>' + entry[0] + '</strong></td>'
+        + '<td style="text-align:right">$' + p.input + '</td><td style="text-align:right">$' + p.output + '</td>'
+        + '<td style="text-align:right">$' + p.cacheRead + '</td><td style="text-align:right">$' + p.cacheCreation + '</td></tr>';
+    });
+    html += '</tbody></table>'
+      + '<div style="margin-top:8px;font-size:12px;color:var(--text-secondary)">'
+      + t('costPricingUnit') + ' · <a href="https://www.anthropic.com/pricing" target="_blank" style="color:var(--accent)">anthropic.com/pricing</a>'
+      + '</div></details></div></div>';
+
+    html += '<div class="generated-at">' + t('generatedAt') + ' ' + formatDateTime(DATA.generatedAt) + ' · ' + (DATA.configDir || '') + '</div>';
+    content.innerHTML = html;
+    bindContentActions();
+    bindPeriodFilter();
+    bindBudgetActions();
+    drawCostTrendCharts(costDailyMap, days);
+  }
+
+  // ── Tokens: Prompt sub-page ──
+  function renderTokensPrompt() {
+    const usage = getUsage();
+    const days = customDateRange ? 0 : currentPeriod;
+    const tokenEntries = filterByPeriod(usage.tokenEntries || [], 'timestamp', days);
+    const promptEntries = filterByPeriod(usage.promptStats || [], 'timestamp', days);
+
+    let html = '<div class="page-header"><h1>💬 ' + t('tokensPrompt') + '</h1></div>';
+
+    // Prompt statistics
     if (promptEntries.length > 0) {
       const totalPrompts = promptEntries.length;
       const totalChars = promptEntries.reduce((sum, p) => sum + p.charLen, 0);
@@ -1199,7 +1270,7 @@
         + '</div></div>';
     }
 
-    // 4. Response latency
+    // Response latency
     const latencyEntries = filterByPeriod(usage.latencyEntries || [], 'timestamp', days);
     if (latencyEntries.length > 0) {
       const latencies = latencyEntries.map((e) => e.latencyMs).sort((a, b) => a - b);
@@ -1218,41 +1289,19 @@
         + '</div></div>';
     }
 
-    // 5. Session analysis
-    const sessionMap = {};
-    tokenEntries.forEach((e) => {
-      const sid = e.sessionId || '_unknown';
-      if (!sessionMap[sid]) sessionMap[sid] = { count: 0, minTs: Infinity, maxTs: 0 };
-      sessionMap[sid].count += 1;
-      const ts = typeof e.timestamp === 'number' ? e.timestamp : new Date(e.timestamp).getTime();
-      if (ts < sessionMap[sid].minTs) sessionMap[sid].minTs = ts;
-      if (ts > sessionMap[sid].maxTs) sessionMap[sid].maxTs = ts;
-    });
-    const sessions = Object.values(sessionMap).filter((s) => s.count > 1);
-    if (sessions.length > 0) {
-      const durations = sessions.map((s) => s.maxTs - s.minTs).filter((d) => d > 0);
-      const totalSessions = sessions.length;
-      const avgMsg = Math.round(sessions.reduce((s, v) => s + v.count, 0) / totalSessions);
-      const avgDur = durations.length > 0 ? Math.round(durations.reduce((s, v) => s + v, 0) / durations.length) : 0;
-      const maxDur = durations.length > 0 ? Math.max(...durations) : 0;
-      const fmtDur = (ms) => ms >= 3600000 ? (ms / 3600000).toFixed(1) + t('unitHour') : ms >= 60000 ? (ms / 60000).toFixed(0) + t('unitMin') : (ms / 1000).toFixed(0) + 's';
-
-      html += '<div class="section"><div class="section-title">' + t('sessionAnalysis') + ' <span class="section-title-sub">' + t('sessionAnalysisDesc') + '</span></div>'
-        + '<div class="card-grid">'
-        + statCard(t('totalSessions'), totalSessions, null, { si: true })
-        + statCard(t('avgMsgPerSession'), avgMsg, null)
-        + statCard(t('avgSessionDuration'), fmtDur(avgDur), null)
-        + statCard(t('longestSession'), fmtDur(maxDur), null)
-        + '</div></div>';
-    }
-
-    // 6. Hourly token distribution
+    // Hourly distribution
     html += '<div class="section">'
       + '<div class="section-title">' + t('hourlyDist') + ' <span class="section-title-sub">' + t('hourlyDistDesc') + '</span></div>'
       + '<div class="card chart-card"><div id="hourly-dist-chart"></div></div>'
       + '</div>';
 
-    // 7. Cache efficiency
+    // Cache efficiency
+    const sessionMap = {};
+    tokenEntries.forEach((e) => {
+      const sid = e.sessionId || '_unknown';
+      if (!sessionMap[sid]) sessionMap[sid] = { count: 0 };
+      sessionMap[sid].count += 1;
+    });
     let totalRawInput = 0, totalCacheRead = 0, totalCacheCreation = 0;
     tokenEntries.forEach((e) => {
       totalRawInput += e.rawInput || 0;
@@ -1268,22 +1317,244 @@
         + statCard(t('cacheRead'), totalCacheRead, null, { si: true, badge: Math.round((totalCacheRead / totalInputAll) * 100) + '%' })
         + statCard(t('cacheCreation'), totalCacheCreation, null, { si: true, badge: Math.round((totalCacheCreation / totalInputAll) * 100) + '%' })
         + statCard(t('cacheHitRate'), hitRate + '%', null)
-        + '</div></div>';
+        + '</div>';
+      const cacheTips = buildCacheTips(tokenEntries, sessionMap, hitRate, totalRawInput, totalCacheRead, totalCacheCreation, totalInputAll);
+      if (cacheTips.length > 0) {
+        html += '<div class="insights-grid" style="margin-top:16px">';
+        cacheTips.forEach((tip) => {
+          html += '<div class="insight-card"><span class="insight-card-icon">' + tip.icon + '</span>'
+            + '<div class="insight-card-body"><div class="insight-card-title">' + escapeHtml(tip.title) + '</div>'
+            + '<div class="insight-card-detail">' + escapeHtml(tip.detail) + '</div></div></div>';
+        });
+        html += '</div>';
+      }
+      html += '</div>';
     }
 
     html += '<div class="generated-at">' + t('generatedAt') + ' ' + formatDateTime(DATA.generatedAt) + ' · ' + (DATA.configDir || '') + '</div>';
     content.innerHTML = html;
     bindContentActions();
-
-    // Draw charts
-    drawRotatedBar('#task-cat-bar', taskCatEntries.map((e) => {
-      const meta = taskCatMeta[e[0]] || taskCatMeta['other'] || { icon: '📦', label: e[0] };
-      return { label: meta.icon + ' ' + (meta.label || e[0]), value: e[1].tokens };
-    }));
-    drawRotatedBar('#tool-ctx-bar', contextEntries.map((e) => {
-      return { label: e[0], value: e[1].tokens };
-    }));
     drawHourlyDistChart(tokenEntries);
+  }
+
+  // ── Tokens: Session sub-page ──
+  function renderTokensSession() {
+    const usage = getUsage();
+    const days = customDateRange ? 0 : currentPeriod;
+    const tokenEntries = filterByPeriod(usage.tokenEntries || [], 'timestamp', days);
+
+    const sessionMap = {};
+    tokenEntries.forEach((e) => {
+      const sid = e.sessionId || '_unknown';
+      if (!sessionMap[sid]) sessionMap[sid] = { count: 0, minTs: Infinity, maxTs: 0, totalTokens: 0, cost: 0, models: {} };
+      const s = sessionMap[sid];
+      s.count += 1;
+      const ts = typeof e.timestamp === 'number' ? e.timestamp : new Date(e.timestamp).getTime();
+      if (ts < s.minTs) s.minTs = ts;
+      if (ts > s.maxTs) s.maxTs = ts;
+      s.totalTokens += (e.rawInput || 0) + (e.outputTokens || 0) + (e.cacheRead || 0) + (e.cacheCreation || 0);
+      s.cost += calcEntryCost(e);
+      const m = (e.model || 'unknown').replace(/^claude-/, '').replace(/-\d{8,}$/, '');
+      s.models[m] = (s.models[m] || 0) + 1;
+    });
+    const sessions = Object.values(sessionMap).filter((s) => s.count > 1);
+    const fmtDur = (ms) => ms >= 3600000 ? (ms / 3600000).toFixed(1) + t('unitHour') : ms >= 60000 ? (ms / 60000).toFixed(0) + t('unitMin') : (ms / 1000).toFixed(0) + 's';
+
+    let html = '<div class="page-header"><h1>📋 ' + t('tokensSession') + '</h1></div>';
+
+    if (sessions.length > 0) {
+      const durations = sessions.map((s) => s.maxTs - s.minTs).filter((d) => d > 0);
+      const totalSessions = sessions.length;
+      const avgMsg = Math.round(sessions.reduce((s, v) => s + v.count, 0) / totalSessions);
+      const avgDur = durations.length > 0 ? Math.round(durations.reduce((s, v) => s + v, 0) / durations.length) : 0;
+      const maxDur = durations.length > 0 ? Math.max(...durations) : 0;
+
+      html += '<div class="section"><div class="section-title">' + t('sessionAnalysis') + ' <span class="section-title-sub">' + t('sessionAnalysisDesc') + '</span></div>'
+        + '<div class="card-grid">'
+        + statCard(t('totalSessions'), totalSessions, null, { si: true })
+        + statCard(t('avgMsgPerSession'), avgMsg, null)
+        + statCard(t('avgSessionDuration'), fmtDur(avgDur), null)
+        + statCard(t('longestSession'), fmtDur(maxDur), null)
+        + '</div>';
+
+      const topSessions = Object.entries(sessionMap)
+        .filter((e) => e[0] !== '_unknown' && e[1].count > 1)
+        .sort((a, b) => b[1].totalTokens - a[1].totalTokens)
+        .slice(0, 20);
+      if (topSessions.length > 0) {
+        html += '<div class="card" style="padding:16px;margin-top:12px;overflow-x:auto">'
+          + '<div style="font-size:13px;font-weight:600;margin-bottom:4px">' + t('sessionTopList') + '</div>'
+          + '<div style="font-size:11px;color:var(--text-secondary);margin-bottom:8px">' + t('sessionTopListHint') + '</div>'
+          + '<table class="session-timeline"><thead><tr>'
+          + '<th>' + t('sessionDate') + '</th>'
+          + '<th style="text-align:right">' + t('totalTokens') + '</th>'
+          + '<th style="text-align:right">' + t('estimatedCost') + '</th>'
+          + '<th style="text-align:right">' + t('sessionDuration') + '</th>'
+          + '<th>Model</th>'
+          + '</tr></thead><tbody>';
+        topSessions.forEach((entry) => {
+          const s = entry[1];
+          const dur = s.maxTs - s.minTs;
+          const modelNames = Object.keys(s.models).join(', ');
+          const sessionDate = new Date(s.minTs);
+          const dowNames = t('dayNames').split(',');
+          const dow = dowNames[sessionDate.getDay()] || '';
+          html += '<tr class="session-row" data-session-id="' + escapeHtml(entry[0]) + '" style="cursor:pointer">'
+            + '<td>' + formatDate(sessionDate.toISOString()) + ' (' + dow + ')</td>'
+            + '<td style="text-align:right">' + fmtCompact(s.totalTokens) + '</td>'
+            + '<td style="text-align:right">' + fmtCost(s.cost) + '</td>'
+            + '<td style="text-align:right">' + fmtDur(dur) + '</td>'
+            + '<td>' + escapeHtml(modelNames) + '</td>'
+            + '</tr>';
+        });
+        html += '</tbody></table></div>';
+      }
+      html += '</div>';
+    }
+
+    html += '<div class="generated-at">' + t('generatedAt') + ' ' + formatDateTime(DATA.generatedAt) + ' · ' + (DATA.configDir || '') + '</div>';
+    content.innerHTML = html;
+    bindContentActions();
+  }
+
+  function renderSessionDetail() {
+    if (!currentSessionId) { currentView = 'tokens-session'; renderTokensAnalysis(); return; }
+
+    const usage = getUsage();
+    const tokenEntries = (usage.tokenEntries || []).filter((e) => e.sessionId === currentSessionId);
+    if (tokenEntries.length === 0) {
+      currentView = 'tokens-session'; renderTokensAnalysis(); return;
+    }
+
+    const skills = (usage.skills || []).filter((e) => e.sessionId === currentSessionId);
+    const agents = (usage.agents || []).filter((e) => e.sessionId === currentSessionId);
+    const mcpCalls = (usage.mcpCalls || []).filter((e) => e.sessionId === currentSessionId);
+    const fmtDur = (ms) => ms >= 3600000 ? (ms / 3600000).toFixed(1) + t('unitHour') : ms >= 60000 ? (ms / 60000).toFixed(0) + t('unitMin') : (ms / 1000).toFixed(0) + 's';
+
+    let totalTokens = 0, totalCost = 0, minTs = Infinity, maxTs = 0;
+    const models = {};
+    tokenEntries.forEach((e) => {
+      const tok = (e.rawInput || 0) + (e.outputTokens || 0) + (e.cacheRead || 0) + (e.cacheCreation || 0);
+      totalTokens += tok;
+      totalCost += calcEntryCost(e);
+      const ts = typeof e.timestamp === 'number' ? e.timestamp : new Date(e.timestamp).getTime();
+      if (ts < minTs) minTs = ts;
+      if (ts > maxTs) maxTs = ts;
+      const m = (e.model || 'unknown').replace(/^claude-/, '').replace(/-\d{8,}$/, '');
+      models[m] = (models[m] || 0) + 1;
+    });
+    const duration = maxTs - minTs;
+
+    let html = '<button class="session-back-btn" id="session-back">← ' + t('sessionBackToSession') + '</button>'
+      + '<div class="page-header"><h1>📋 ' + t('sessionDetail') + '</h1>'
+      + '<div class="page-desc">' + formatDateTime(new Date(minTs).toISOString()) + '</div>'
+      + '</div>';
+
+    // Stat cards
+    html += '<div class="card-grid">'
+      + statCard(t('totalTokens'), totalTokens, null, { si: true })
+      + statCard(t('estimatedCost'), fmtCost(totalCost), null, { raw: true })
+      + statCard(t('sessionDuration'), fmtDur(duration), null, { raw: true })
+      + statCard(t('sessionMessages'), tokenEntries.length, null)
+      + '</div>';
+
+    // Models
+    html += '<div class="section"><div class="section-title">' + t('sessionModels') + '</div>'
+      + '<div class="session-badge-list">';
+    Object.entries(models).sort((a, b) => b[1] - a[1]).forEach((e) => {
+      html += '<span class="session-badge">' + escapeHtml(e[0]) + ' (' + e[1] + ')</span>';
+    });
+    html += '</div></div>';
+
+    // Skills / Agents / MCP used
+    const uniqueSkills = [...new Set(skills.map((s) => s.name))];
+    const uniqueAgents = [...new Set(agents.map((a) => a.name))];
+    const uniqueMcps = [...new Set(mcpCalls.map((m) => m.name))];
+
+    if (uniqueSkills.length > 0 || uniqueAgents.length > 0 || uniqueMcps.length > 0) {
+      html += '<div class="section"><div class="section-title">' + t('sessionInvoked') + '</div>'
+        + '<div class="session-badge-list">';
+      uniqueSkills.forEach((n) => { html += '<span class="session-badge">🧠 ' + escapeHtml(n) + '</span>'; });
+      uniqueAgents.forEach((n) => { html += '<span class="session-badge">🤖 ' + escapeHtml(n) + '</span>'; });
+      uniqueMcps.forEach((n) => { html += '<span class="session-badge">🔌 ' + escapeHtml(n) + '</span>'; });
+      html += '</div></div>';
+    }
+
+    // Timeline table
+    html += '<div class="section"><div class="section-title">' + t('sessionTimeline') + '</div>'
+      + '<div class="card" style="padding:16px;overflow-x:auto">'
+      + '<table class="session-timeline"><thead><tr>'
+      + '<th>' + t('sessionTime') + '</th><th>Model</th><th>Context</th>'
+      + '<th style="text-align:right">Input</th><th style="text-align:right">Output</th>'
+      + '<th style="text-align:right">Cache</th><th style="text-align:right">' + t('estimatedCost') + '</th>'
+      + '</tr></thead><tbody>';
+
+    const sorted = tokenEntries.slice().sort((a, b) => {
+      const ta = typeof a.timestamp === 'number' ? a.timestamp : new Date(a.timestamp).getTime();
+      const tb = typeof b.timestamp === 'number' ? b.timestamp : new Date(b.timestamp).getTime();
+      return ta - tb;
+    });
+    sorted.forEach((e) => {
+      const d = typeof e.timestamp === 'number' ? new Date(e.timestamp) : new Date(e.timestamp);
+      const time = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0') + ':' + String(d.getSeconds()).padStart(2, '0');
+      const m = (e.model || 'unknown').replace(/^claude-/, '').replace(/-\d{8,}$/, '');
+      const ctx = e.contextName || 'general';
+      html += '<tr>'
+        + '<td>' + time + '</td>'
+        + '<td>' + escapeHtml(m) + '</td>'
+        + '<td>' + escapeHtml(ctx) + '</td>'
+        + '<td style="text-align:right">' + fmtCompact(e.rawInput || 0) + '</td>'
+        + '<td style="text-align:right">' + fmtCompact(e.outputTokens || 0) + '</td>'
+        + '<td style="text-align:right">' + fmtCompact((e.cacheRead || 0) + (e.cacheCreation || 0)) + '</td>'
+        + '<td style="text-align:right">' + fmtCost(calcEntryCost(e)) + '</td>'
+        + '</tr>';
+    });
+    html += '</tbody></table></div></div>';
+
+    content.innerHTML = html;
+    bindContentActions();
+
+    // Back button
+    const backBtn = document.getElementById('session-back');
+    if (backBtn) {
+      backBtn.addEventListener('click', () => {
+        currentView = 'tokens-session';
+        currentSessionId = null;
+        pushState(true);
+        render();
+      });
+    }
+  }
+
+  function buildCacheTips(tokenEntries, sessionMap, hitRate, totalRawInput, totalCacheRead, totalCacheCreation, totalInputAll) {
+    const tips = [];
+    if (totalInputAll === 0) return tips;
+
+    // 1. Overall low hit rate
+    if (hitRate < 20) {
+      tips.push({ icon: '⚠️', title: t('cacheTipLowHitTitle'), detail: t('cacheTipLowHitDetail', hitRate) });
+    } else if (hitRate > 70) {
+      tips.push({ icon: '✅', title: t('cacheTipGoodTitle'), detail: t('cacheTipGoodDetail', hitRate) });
+    }
+
+    // 2. High creation / low read ratio
+    if (totalCacheCreation > totalCacheRead * 2 && totalCacheCreation > 0) {
+      tips.push({ icon: '🔄', title: t('cacheTipHighCreationTitle'), detail: t('cacheTipHighCreationDetail') });
+    }
+
+    // 3. Sessions with no cache reads
+    const sessionIds = Object.keys(sessionMap);
+    if (sessionIds.length > 2) {
+      const noCacheSessions = sessionIds.filter((sid) => {
+        return tokenEntries.filter((e) => e.sessionId === sid).every((e) => (e.cacheRead || 0) === 0);
+      });
+      const noCachePct = Math.round((noCacheSessions.length / sessionIds.length) * 100);
+      if (noCachePct > 50) {
+        tips.push({ icon: '📊', title: t('cacheTipNoSessionTitle'), detail: t('cacheTipNoSessionDetail', noCachePct) });
+      }
+    }
+
+    return tips;
   }
 
   function drawHourlyDistChart(tokenEntries) {
@@ -1526,7 +1797,7 @@
     return html;
   }
 
-  function drawTokenTrendChart(tokenEntries, days) {
+  function drawTokenTrendChart(tokenEntries, days, prevEntries) {
     let el = document.getElementById('token-trend-chart');
     if (!el) return;
 
@@ -1584,20 +1855,49 @@
       outputData.push(dailyOutput[dateLabels[j]] || 0);
     }
 
+    const columns = [dateLabels, inputData, outputData];
+    const types = {};
     const outputKey = t('outputTokens');
     const inputKey = t('inputTokens');
     const axes = {};
     axes[outputKey] = 'y2';
+    const colors = {};
+
+    // Compare mode: add previous period data aligned to current dates
+    if (prevEntries && prevEntries.length > 0) {
+      const prevDailyTotal = {};
+      for (let i = 0; i < numDays; i++) {
+        const d = new Date(endDate);
+        d.setDate(d.getDate() - (numDays - 1 - i) - numDays);
+        prevDailyTotal[dateKey(d)] = 0;
+      }
+      prevEntries.forEach((e) => {
+        const ts = e.timestamp;
+        const key = typeof ts === 'string' ? ts.substring(0, 10) : typeof ts === 'number' ? new Date(ts).toISOString().substring(0, 10) : '';
+        if (prevDailyTotal.hasOwnProperty(key)) {
+          prevDailyTotal[key] += (e.rawInput || 0) + (e.outputTokens || 0) + (e.cacheRead || 0) + (e.cacheCreation || 0);
+        }
+      });
+      const prevLabel = t('comparePrev');
+      const prevData = [prevLabel];
+      const prevKeys = Object.keys(prevDailyTotal).sort();
+      prevKeys.forEach((k) => { prevData.push(prevDailyTotal[k] || 0); });
+      // Pad if shorter
+      while (prevData.length < dateLabels.length) prevData.push(0);
+      columns.push(prevData);
+      types[prevLabel] = 'line';
+      colors[prevLabel] = '#adb5bd';
+    }
 
     bb.generate({
       bindto: '#token-trend-chart',
       data: {
         x: 'x',
-        columns: [dateLabels, inputData, outputData],
-        types: {},
+        columns: columns,
+        types: types,
         type: 'area',
         axes: axes,
-        colors: {}
+        colors: colors
       },
       axis: {
         x: {
@@ -1689,6 +1989,249 @@
     });
   }
 
+  function renderBudgetSection(costDailyMap) {
+    let html = '<div class="section"><div class="section-title">'
+      + t('budgetTitle')
+      + '</div>'
+      + '<div style="margin-bottom:8px;font-size:12px;color:var(--text-secondary)">' + t('budgetDesc') + '</div>';
+
+    // Config panel (always visible)
+    const bd = tokenBudget || {};
+    html += '<div class="budget-config-panel">'
+      + '<div class="budget-config-row">'
+      + '<label>' + t('budgetDaily') + ' $<input type="number" id="budget-daily" min="0" step="0.1" value="' + (bd.daily || '') + '"></label>'
+      + '<label>' + t('budgetWeekly') + ' $<input type="number" id="budget-weekly" min="0" step="1" value="' + (bd.weekly || '') + '"></label>'
+      + '<label>' + t('budgetMonthly') + ' $<input type="number" id="budget-monthly" min="0" step="1" value="' + (bd.monthly || '') + '"></label>'
+      + '<div class="budget-config-actions">'
+      + '<button class="period-btn" id="budget-save-btn">' + t('budgetSave') + '</button>'
+      + '<button class="period-btn" id="budget-clear-btn">' + t('budgetClear') + '</button>'
+      + '</div>'
+      + '</div></div>';
+
+    // Progress bars
+    if (tokenBudget) {
+      const today = new Date().toISOString().substring(0, 10);
+      const todayCost = costDailyMap[today] || 0;
+
+      // Weekly: sum last 7 days
+      let weeklyCost = 0;
+      for (let i = 0; i < 7; i++) {
+        const d = new Date(); d.setDate(d.getDate() - i);
+        weeklyCost += costDailyMap[d.toISOString().substring(0, 10)] || 0;
+      }
+
+      // Monthly: sum last 30 days
+      let monthlyCost = 0;
+      for (let i = 0; i < 30; i++) {
+        const d = new Date(); d.setDate(d.getDate() - i);
+        monthlyCost += costDailyMap[d.toISOString().substring(0, 10)] || 0;
+      }
+
+      const bars = [];
+      if (tokenBudget.daily) bars.push({ label: t('budgetDaily'), spent: todayCost, budget: tokenBudget.daily });
+      if (tokenBudget.weekly) bars.push({ label: t('budgetWeekly'), spent: weeklyCost, budget: tokenBudget.weekly });
+      if (tokenBudget.monthly) bars.push({ label: t('budgetMonthly'), spent: monthlyCost, budget: tokenBudget.monthly });
+
+      if (bars.length > 0) {
+        html += '<div class="budget-bars">';
+        bars.forEach((b) => {
+          const rawPct = (b.spent / b.budget) * 100;
+          const pct = Math.min(rawPct, 100);
+          const cls = rawPct >= 100 ? 'exceeded' : rawPct >= 80 ? 'warning' : '';
+          let suffix = '';
+          if (rawPct >= 100) {
+            const over = b.spent - b.budget;
+            suffix = ' ⚠️ ' + t('budgetExceededDetail', fmtCost(over), Math.round(rawPct - 100));
+          } else if (rawPct >= 80) {
+            suffix = ' ⚠️';
+          }
+          html += '<div class="budget-bar-row">'
+            + '<div class="budget-bar-label">' + b.label + '</div>'
+            + '<div class="budget-bar-track"><div class="budget-bar-fill ' + cls + '" style="width:' + pct.toFixed(1) + '%"></div></div>'
+            + '<div class="budget-bar-text">' + fmtCost(b.spent) + ' / ' + fmtCost(b.budget) + suffix
+            + '</div></div>';
+        });
+        html += '</div>';
+      }
+    }
+
+    html += '</div>';
+    return html;
+  }
+
+  function bindBudgetActions() {
+    const saveBtn = document.getElementById('budget-save-btn');
+    if (saveBtn) {
+      saveBtn.addEventListener('click', () => {
+        const daily = parseFloat(document.getElementById('budget-daily').value) || null;
+        const weekly = parseFloat(document.getElementById('budget-weekly').value) || null;
+        const monthly = parseFloat(document.getElementById('budget-monthly').value) || null;
+        if (daily || weekly || monthly) {
+          tokenBudget = { daily, weekly, monthly };
+          localStorage.setItem('harness-budget', JSON.stringify(tokenBudget));
+        } else {
+          tokenBudget = null;
+          localStorage.removeItem('harness-budget');
+        }
+        skipScrollReset = true;
+        renderContent();
+      });
+    }
+    const clearBtn = document.getElementById('budget-clear-btn');
+    if (clearBtn) {
+      clearBtn.addEventListener('click', () => {
+        tokenBudget = null;
+        localStorage.removeItem('harness-budget');
+        skipScrollReset = true;
+        renderContent();
+      });
+    }
+  }
+
+  function drawCostTrendCharts(costDailyMap, days) {
+    const keys = Object.keys(costDailyMap).sort();
+    const noData = '<div style="text-align:center;color:#6c757d;padding:20px 0;font-size:13px">' + t('noUsageData') + '</div>';
+
+    // Compute date range
+    let numDays, endDate;
+    if (customDateRange) {
+      numDays = Math.ceil((customDateRange.end - customDateRange.start) / 86400000) + 1;
+      endDate = customDateRange.end;
+    } else if (days === 0) {
+      const dataRange = getDataDateRange();
+      if (dataRange) {
+        const startDay = new Date(dataRange.start.getFullYear(), dataRange.start.getMonth(), dataRange.start.getDate());
+        const endDay = new Date(dataRange.end.getFullYear(), dataRange.end.getMonth(), dataRange.end.getDate());
+        endDate = endDay;
+        numDays = Math.round((endDay - startDay) / 86400000) + 1;
+      } else {
+        numDays = 90; endDate = new Date();
+      }
+    } else {
+      numDays = days; endDate = new Date();
+    }
+
+    // 1. Daily chart
+    const elDaily = document.getElementById('cost-trend-daily');
+    if (elDaily) {
+      if (keys.length === 0) { elDaily.innerHTML = noData; }
+      else {
+        const dateLabels = ['x'];
+        const costData = [t('estimatedCost')];
+        for (let i = 0; i < numDays; i++) {
+          const d = new Date(endDate);
+          d.setDate(d.getDate() - (numDays - 1 - i));
+          const key = dateKey(d);
+          dateLabels.push(key);
+          costData.push(costDailyMap[key] || 0);
+        }
+        const budgetLines = [];
+        if (tokenBudget && tokenBudget.daily) {
+          budgetLines.push({ value: tokenBudget.daily, text: fmtCost(tokenBudget.daily), class: 'budget-grid-line' });
+        }
+        bb.generate({
+          bindto: '#cost-trend-daily',
+          data: { x: 'x', columns: [dateLabels, costData], type: 'area', colors: {} },
+          axis: {
+            x: { type: 'timeseries', tick: { format: '%m-%d', count: 6, outer: false } },
+            y: { min: 0, padding: { bottom: 0, top: budgetLines.length > 0 ? 10 : 0 }, tick: { count: 4, format: (v) => fmtCost(v) } }
+          },
+          grid: { y: { lines: budgetLines } },
+          point: { r: 2, focus: { only: true } },
+          legend: { show: false },
+          size: { height: 150 },
+          color: { pattern: ['#e8590c'] },
+          clipPath: false,
+          area: { linearGradient: true },
+          tooltip: { format: { title: fmtChartTooltipTitle, value: (v) => fmtCost(v) } }
+        });
+      }
+    }
+
+    // 2. Weekly chart — aggregate daily costs into weeks
+    const elWeekly = document.getElementById('cost-trend-weekly');
+    if (elWeekly) {
+      if (keys.length === 0) { elWeekly.innerHTML = noData; }
+      else {
+        const weekMap = {};
+        for (let i = 0; i < numDays; i++) {
+          const d = new Date(endDate);
+          d.setDate(d.getDate() - (numDays - 1 - i));
+          const key = dateKey(d);
+          // Week key = Monday of that week
+          const wd = new Date(d);
+          const dayOfWeek = wd.getDay();
+          const diff = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+          wd.setDate(wd.getDate() + diff);
+          const wk = dateKey(wd);
+          weekMap[wk] = (weekMap[wk] || 0) + (costDailyMap[key] || 0);
+        }
+        const weekKeys = Object.keys(weekMap).sort();
+        const wDateLabels = ['x'].concat(weekKeys);
+        const wCostData = [t('estimatedCost')].concat(weekKeys.map((k) => weekMap[k]));
+        const budgetLines = [];
+        if (tokenBudget && tokenBudget.weekly) {
+          budgetLines.push({ value: tokenBudget.weekly, text: fmtCost(tokenBudget.weekly), class: 'budget-grid-line' });
+        }
+        bb.generate({
+          bindto: '#cost-trend-weekly',
+          data: { x: 'x', columns: [wDateLabels, wCostData], type: 'area', colors: {} },
+          axis: {
+            x: { type: 'timeseries', tick: { format: '%m-%d', count: Math.min(weekKeys.length, 8), outer: false } },
+            y: { min: 0, padding: { bottom: 0, top: budgetLines.length > 0 ? 10 : 0 }, tick: { count: 4, format: (v) => fmtCost(v) } }
+          },
+          grid: { y: { lines: budgetLines } },
+          point: { r: 2, focus: { only: true } },
+          legend: { show: false },
+          size: { height: 150 },
+          color: { pattern: ['#7c3aed'] },
+          clipPath: false,
+          area: { linearGradient: true },
+          tooltip: { format: { title: fmtChartTooltipTitle, value: (v) => fmtCost(v) } }
+        });
+      }
+    }
+
+    // 3. Monthly chart — aggregate daily costs into months
+    const elMonthly = document.getElementById('cost-trend-monthly');
+    if (elMonthly) {
+      if (keys.length === 0) { elMonthly.innerHTML = noData; }
+      else {
+        const monthMap = {};
+        for (let i = 0; i < numDays; i++) {
+          const d = new Date(endDate);
+          d.setDate(d.getDate() - (numDays - 1 - i));
+          const key = dateKey(d);
+          const mk = key.substring(0, 7) + '-01';
+          monthMap[mk] = (monthMap[mk] || 0) + (costDailyMap[key] || 0);
+        }
+        const monthKeys = Object.keys(monthMap).sort();
+        const mDateLabels = ['x'].concat(monthKeys);
+        const mCostData = [t('estimatedCost')].concat(monthKeys.map((k) => monthMap[k]));
+        const budgetLines = [];
+        if (tokenBudget && tokenBudget.monthly) {
+          budgetLines.push({ value: tokenBudget.monthly, text: fmtCost(tokenBudget.monthly), class: 'budget-grid-line' });
+        }
+        bb.generate({
+          bindto: '#cost-trend-monthly',
+          data: { x: 'x', columns: [mDateLabels, mCostData], type: 'area', colors: {} },
+          axis: {
+            x: { type: 'timeseries', tick: { format: '%Y-%m', count: Math.min(monthKeys.length, 12), outer: false } },
+            y: { min: 0, padding: { bottom: 0, top: budgetLines.length > 0 ? 10 : 0 }, tick: { count: 4, format: (v) => fmtCost(v) } }
+          },
+          grid: { y: { lines: budgetLines } },
+          point: { r: 2, focus: { only: true } },
+          legend: { show: false },
+          size: { height: 150 },
+          color: { pattern: ['#0ca678'] },
+          clipPath: false,
+          area: { linearGradient: true },
+          tooltip: { format: { title: (d) => { const s = String(d); return s.length >= 7 ? s.substring(0, 7) : fmtChartTooltipTitle(d); }, value: (v) => fmtCost(v) } }
+        });
+      }
+    }
+  }
+
   // ── Overview page ──
   function renderOverview() {
     let scope = DATA.scopes.find((s) => { return s.id === currentScope; });
@@ -1737,6 +2280,7 @@
     // Unused items
     const unusedSkills = getItems('skills').filter((s) => { return countUsage('skills', s.name, days) === 0; });
     const unusedAgents = getItems('agents').filter((a) => { return countUsage('agents', a.name, days) === 0; });
+    const unusedMcps = getItems('mcpServers').filter((m) => { return countUsage('mcpServers', m.name, days) === 0; });
 
     let html = '<div class="page-header">'
       + '<h1>' + t('overviewTitle') + '</h1>'
@@ -1811,10 +2355,19 @@
     html += renderInsights(usage, days, unusedAgents);
 
     // Unused Items
-    if (unusedSkills.length > 0 || unusedAgents.length > 0) {
+    const totalUnused = unusedSkills.length + unusedAgents.length + unusedMcps.length;
+    if (totalUnused > 0) {
       html += '<div class="section">'
-        + '<div class="section-title">' + t('unusedItems') + ' <span class="section-title-sub">' + t('unusedCriteria') + '</span></div>'
-        + '<div class="unused-grid">';
+        + '<div class="section-title">' + t('unusedItems') + ' (' + totalUnused + ') <span class="section-title-sub">' + t('unusedCriteria') + '</span></div>';
+      if (totalUnused > 3) {
+        html += '<div class="insights-grid" style="margin-bottom:16px"><div class="insight-card">'
+          + '<span class="insight-card-icon">🧹</span>'
+          + '<div class="insight-card-body">'
+          + '<div class="insight-card-title">' + t('unusedCleanupTipTitle') + '</div>'
+          + '<div class="insight-card-detail">' + t('unusedCleanupTipDetail', totalUnused) + '</div>'
+          + '</div></div></div>';
+      }
+      html += '<div class="unused-grid">';
       unusedSkills.forEach((s) => {
         html += '<div class="unused-item" data-action="goto-detail" data-category="skills" data-name="' + escapeHtml(s.name) + '">'
           + typeBadge('skills') + parentBadge('skills', s.name) + '<span>' + escapeHtml(s.name) + '</span></div>';
@@ -1822,6 +2375,10 @@
       unusedAgents.forEach((a) => {
         html += '<div class="unused-item" data-action="goto-detail" data-category="agents" data-name="' + escapeHtml(a.name) + '">'
           + typeBadge('agents') + '<span>' + escapeHtml(a.name) + '</span></div>';
+      });
+      unusedMcps.forEach((m) => {
+        html += '<div class="unused-item" data-action="goto-detail" data-category="mcpServers" data-name="' + escapeHtml(m.name) + '">'
+          + typeBadge('mcpServers') + '<span>' + escapeHtml(m.name) + '</span></div>';
       });
       html += '</div></div>';
     }
@@ -2249,11 +2806,18 @@
     const useSI = opts && opts.si;
     const displayValue = useRaw ? value : (useSI ? fmtCompact(value) : fmtNum(value));
     const rawHtml = !useRaw && useSI && value >= 1e4 ? '<div class="stat-raw">' + fmtNum(value) + '</div>' : '';
+    let compareHtml = '';
+    if (opts && opts.compare && typeof opts.compare === 'object') {
+      compareHtml = '<div class="stat-compare">'
+        + '<span class="stat-compare-label">' + opts.compare.label + '</span>'
+        + '<span class="stat-compare-value">' + opts.compare.value + '</span>'
+        + '</div>';
+    }
     return '<div class="stat-card">'
       + '<div class="stat-label">' + label + '</div>'
       + '<div class="stat-value">' + displayValue + '</div>'
       + rawHtml
-      + changeHtml + badgeHtml + '</div>';
+      + changeHtml + badgeHtml + compareHtml + '</div>';
   }
 
   function buildActivityMap(items, valueFn) {
@@ -3377,6 +3941,17 @@
           pushState(true);
           render();
         }
+      });
+    });
+    // Session row click
+    content.querySelectorAll('.session-row').forEach((el) => {
+      el.addEventListener('click', () => {
+        currentView = 'session';
+        currentSessionId = el.dataset.sessionId;
+        currentDetail = null;
+        expandedCategories._tokens = true;
+        pushState(true);
+        render();
       });
     });
     // Team member toggle
