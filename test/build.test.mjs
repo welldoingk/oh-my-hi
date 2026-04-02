@@ -98,12 +98,14 @@ describe('Build', () => {
       assert.ok(!html.includes('>__BB_CSS__<'), 'BB_CSS placeholder');
       assert.ok(!html.includes('>__STYLES__<'), 'STYLES placeholder');
       assert.ok(!html.includes('>__APP_JS__<'), 'APP_JS placeholder');
-      assert.ok(html.includes('let DATA ='), 'DATA should be inlined');
+      assert.ok(html.includes('src="data.js"'), 'DATA should be loaded via external data.js');
       assert.ok(!html.includes('__VERSION__'), 'VERSION placeholder');
     });
 
-    it('should contain inlined DATA variable', () => {
-      assert.ok(html.includes('let DATA ='));
+    it('should have separate data.js file', () => {
+      assert.ok(fs.existsSync(path.join(OUTPUT, 'data.js')), 'data.js should exist');
+      const dataJs = fs.readFileSync(path.join(OUTPUT, 'data.js'), 'utf-8');
+      assert.ok(dataJs.startsWith('let DATA ='), 'data.js should define DATA variable');
     });
 
     it('should contain inlined billboard.js', () => {

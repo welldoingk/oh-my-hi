@@ -39,7 +39,15 @@ oh-my-hi/
 │       └── ko.json              # Korean locale
 └── output/                      # Generated artifacts
     ├── data.json                # Raw data (for programmatic access)
-    └── index.html               # Single file with inlined data+locale+CSS+JS
+    ├── data.js                  # Minified data for browser (let DATA = ...)
+    ├── index.html               # Dashboard shell (CSS+JS+locales, loads data.js)
+    ├── cache/
+    │   ├── mtime-index.json     # File path → mtime mapping (relative paths)
+    │   ├── base-*.json.gz       # Compacted cache (after 50 segments)
+    │   ├── seg-*.json.gz        # Incremental cache segments
+    │   └── .update-check        # npm registry check cache (24h TTL)
+    └── pending/
+        └── *.json               # Lightweight mode deltas (plain JSON)
 ```
 
 ## CLI Parameters
@@ -47,9 +55,10 @@ oh-my-hi/
 | Parameter | Description |
 |-----------|-------------|
 | `/omh` | Full build: parse data → build web-ui → open/refresh browser |
-| `--data-only` | Regenerate data + web-ui (skip auto-refresh notice and browser open) |
+| `--data-only` | Lightweight data collection — parse changed files, update data.js (skip full build) |
 | `--enable-auto` | Register Stop hook for auto-rebuild on session end |
 | `--disable-auto` | Remove Stop hook |
+| `--update` | Check npm registry and install latest version |
 | `--status` | Show auto-refresh hook status |
 | `<path> [path...]` | Include only specified project paths |
 | `--help` | Show help |
@@ -57,18 +66,24 @@ oh-my-hi/
 ## Build Pipeline
 
 ```
-1. Detect scopes (global + projects)
-2. Parse all data sources per scope
-3. Build task categories (description-based classification → task-categories.json)
-4. Detect system locale → load locales/{locale}.json
-5. Generate data.json
-6. Generate index.html:
-   - dashboard.html template
-   - __STYLES__ → styles.css
-   - __DATA__ → data.json (escaped, inlined)
-   - __LOCALE_DATA__ → locale JSON (with _lang field)
-   - __APP_JS__ → app.js
-7. Open/refresh browser
+Full mode (/omh):
+  1. Detect scopes (global + projects)
+  2. Load cache segments + merge pending files
+  3. Parse changed transcript files (incremental via mtime/size cache)
+  4. Save cache segment (gzipped, append-only) + mtime index
+  5. Build task categories (description-based classification → task-categories.json)
+  6. Generate data.json + data.js (minified for browser)
+  7. Generate index.html (only on version change or first run):
+     - dashboard.html template + __STYLES__ + __APP_JS__ + __LOCALE_DATA__ + billboard.js
+     - Data loaded via <script src="data.js"> (not inlined)
+  8. Open/refresh browser + async update check (24h cache)
+
+Lightweight mode (--data-only, Stop hook):
+  1. Load mtime-index.json (~34KB) for change detection
+  2. Parse only changed transcript files
+  3. Save pending file (plain JSON, no gzip)
+  4. Update data.js by merging into existing data.json
+  5. Rebuild index.html only if missing or version changed
 ```
 
 ## Data Sources (13 parsers)
@@ -157,8 +172,10 @@ configFiles, skills, agents, plugins, hooks, memory, mcpServers, rules, principl
 
 ## Key Architectural Decisions
 
-1. **Data inline (no fetch)**: index.html embeds data.json as `DATA` variable. Required for file:// protocol compatibility.
-2. **Single output file**: All CSS, JS, data, locale inlined into index.html. Billboard.js bundled inline, no CDN dependencies.
-3. **Persistent category mapping**: `task-categories.json` auto-generated at every build from `work-types.json` schema.
-4. **Locale built once**: Locale file generated on first build for unknown locales. Not rebuilt on subsequent runs.
-5. **AppleScript tab reuse**: macOS-only optimization. Searches all browser windows/tabs for URL match.
+1. **Data separated from shell**: `index.html` is the dashboard shell (CSS/JS/locales), `data.js` holds the data. Shell is rebuilt only on version change; data is updated independently via `<script src="data.js">` (works with `file://` protocol).
+2. **Incremental cache**: Transcript parse results cached as gzipped segments (append-only). Only changed files are re-parsed. Compaction merges segments when count exceeds 50.
+3. **Lightweight mode**: `--data-only` (Stop hook) uses a mtime-index for change detection without loading full cache. Writes plain JSON pending files, updates `data.js` by merging into existing `data.json`.
+4. **Progressive loading**: On cold start, shows 7-day preview immediately, then loads full data in background.
+5. **Persistent category mapping**: `task-categories.json` auto-generated at every build from `work-types.json` schema.
+6. **Auto-update check**: `/omh` queries npm registry asynchronously (3s timeout, 24h cache). Notifies when new version is available.
+7. **AppleScript tab reuse**: macOS-only optimization. Searches all browser windows/tabs for URL match.

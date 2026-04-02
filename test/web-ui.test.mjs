@@ -14,7 +14,7 @@ describe('Web UI — Templates', () => {
     before(() => { html = fs.readFileSync(path.join(TEMPLATES, 'dashboard.html'), 'utf-8'); });
 
     it('should contain all required placeholders', () => {
-      const required = ['__BB_CSS__', '__STYLES__', '__BB_JS__', '__DATA__', '__EN_DATA__', '__LOCALE_DATA__', '__APP_JS__', '__VERSION__', '__BB_DARK_CSS_STR__'];
+      const required = ['__BB_CSS__', '__STYLES__', '__BB_JS__', '__EN_DATA__', '__LOCALE_DATA__', '__APP_JS__', '__VERSION__', '__BB_DARK_CSS_STR__'];
       for (const ph of required) {
         assert.ok(html.includes(ph), `missing placeholder: ${ph}`);
       }

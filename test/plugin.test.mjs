@@ -104,15 +104,13 @@ describe('Plugin — Parameter Behavior', () => {
     assert.ok(output.includes('Usage:'));
     assert.ok(output.includes('--data-only'));
     assert.ok(output.includes('--enable-auto'));
+    assert.ok(output.includes('--update'));
   });
 
-  it('--data-only should build without browser open message', () => {
+  it('--data-only should run in lightweight mode', () => {
     const output = run('--data-only');
-    assert.ok(output.includes('oh-my-hi: collecting data'));
-    assert.ok(output.includes('index.html generated'));
-    // Should NOT print auto-refresh notice
-    assert.ok(!output.includes('Auto data refresh is not configured') || output.includes('Auto data refresh is not configured'),
-      'data-only can show or skip auto-refresh notice');
+    assert.ok(output.includes('oh-my-hi: collecting data (lightweight)'));
+    assert.ok(output.includes('oh-my-hi: done (lightweight)'));
   });
 
   it('--status should print auto-refresh status', () => {
@@ -140,6 +138,54 @@ describe('Plugin — Parameter Behavior', () => {
   it('--disable-auto should remove Stop hook', () => {
     const disableOut = run('--disable-auto');
     assert.ok(disableOut.includes('disabled') || disableOut.includes('not configured'));
+  });
+});
+
+describe('Plugin — Update Check', () => {
+  const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const OUTPUT = path.join(ROOT, 'output');
+
+  it('--update should show current version and check registry', () => {
+    const output = execSync('node scripts/generate-dashboard.mjs --update', {
+      cwd: ROOT, encoding: 'utf-8', timeout: 15000,
+    });
+    assert.ok(output.includes('current version'), 'should print current version');
+    assert.ok(output.includes('checking for updates'), 'should check registry');
+    // Should either be "already up to date" or "available"
+    assert.ok(
+      output.includes('already up to date') || output.includes('available'),
+      'should report result'
+    );
+  });
+
+  it('--update should not run main dashboard build', () => {
+    const output = execSync('node scripts/generate-dashboard.mjs --update', {
+      cwd: ROOT, encoding: 'utf-8', timeout: 15000,
+    });
+    assert.ok(!output.includes('collecting data'), 'should not run data collection');
+    assert.ok(!output.includes('scopes:'), 'should not detect scopes');
+  });
+
+  it('auto update check should cache results', () => {
+    const checkFile = path.join(OUTPUT, 'cache', '.update-check');
+    // Clean previous check
+    try { fs.unlinkSync(checkFile); } catch {}
+
+    // Run full mode to trigger auto check
+    execSync('node scripts/generate-dashboard.mjs --data-only', {
+      cwd: ROOT, encoding: 'utf-8', timeout: 30000,
+    });
+    // Lightweight mode doesn't do update check, so use a direct call
+    execSync('node scripts/generate-dashboard.mjs --update', {
+      cwd: ROOT, encoding: 'utf-8', timeout: 15000,
+    });
+
+    // Check file should exist with timestamp
+    assert.ok(fs.existsSync(checkFile), '.update-check should exist');
+    const data = JSON.parse(fs.readFileSync(checkFile, 'utf-8'));
+    assert.ok(data.timestamp, 'should have timestamp');
+    assert.ok(data.current, 'should have current version');
+    assert.ok(data.latest, 'should have latest version');
   });
 });
 

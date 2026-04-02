@@ -1827,8 +1827,9 @@ body.dark .bb-tooltip .value {
   background: var(--bg);
 }
 
-/* ── Update Banner ── */
-.update-banner {
+/* ── Top Banners (shared base) ── */
+.update-banner,
+.partial-banner {
   position: fixed;
   top: 0;
   left: var(--sidebar-width);
@@ -1836,13 +1837,15 @@ body.dark .bb-tooltip .value {
   z-index: 1000;
   display: flex;
   align-items: center;
-  gap: 12px;
   padding: 10px 20px;
-  background: #4263eb;
   color: #fff;
   font-size: 13px;
   font-weight: 500;
   box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+}
+.update-banner {
+  gap: 12px;
+  background: #4263eb;
 }
 
 .update-banner button {
@@ -2045,6 +2048,26 @@ body.dark .bb-tooltip .value {
   z-index: 9999;
   pointer-events: none;
   opacity: 0.85;
+}
+
+.partial-banner {
+  gap: 10px;
+  background: #e67700;
+}
+
+.partial-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255,255,255,0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: partial-spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes partial-spin {
+  to { transform: rotate(360deg); }
 }
 
 /* ── Responsive ── */

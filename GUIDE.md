@@ -197,6 +197,10 @@ Enable the ⚖ compare toggle in the sidebar to see explicit previous period val
 
 ### Data Refresh
 
-Run `/omh --data-only` to regenerate data and the web-ui without opening a new browser tab. Bookmark the generated local file (`output/index.html`) and refresh the page anytime to see the latest data.
+Run `/omh --data-only` to collect the latest data without rebuilding the dashboard. The data file (`data.js`) is updated incrementally — only changed transcript files are re-parsed.
 
-Enable auto-refresh with `/omh --enable-auto` to rebuild data on every session end — just refresh the bookmarked tab to see updates.
+Enable auto-refresh with `/omh --enable-auto` to collect data on every session end. Bookmark `output/index.html` and refresh the page anytime to see the latest data.
+
+### Update
+
+Run `/omh --update` to check for and install the latest version. An update check also runs automatically once per day when you use `/omh`.

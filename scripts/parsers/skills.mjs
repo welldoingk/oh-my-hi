@@ -8,12 +8,16 @@ import { parseFrontmatter } from './frontmatter.mjs';
  * @param {string} dir
  * @returns {string[]}
  */
+const SKIP_DIRS = new Set(['node_modules', '.git', 'output', 'test']);
+const SKIP_DIR_PREFIXES = ['temp_git_', 'temp_local_'];
+
 function findSkillFiles(dir) {
   if (!fs.existsSync(dir)) return [];
   const results = [];
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
+      if (SKIP_DIRS.has(entry.name) || SKIP_DIR_PREFIXES.some(p => entry.name.startsWith(p))) continue;
       results.push(...findSkillFiles(full));
     } else if (entry.name === 'SKILL.md') {
       results.push(full);

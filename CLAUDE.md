@@ -16,7 +16,7 @@ npm run build         # Generate output/index.html + data.json (--data-only)
 npm test              # Run all tests (build, web-ui, plugin)
 ```
 
-Build entry: `node scripts/generate-dashboard.mjs` reads `templates/dashboard.html`, replaces placeholders, and inlines all CSS/JS/data.
+Build entry: `node scripts/generate-dashboard.mjs` — full mode generates `index.html` (shell) + `data.js` (data) + cache segments. `--data-only` runs lightweight mode (mtime check → parse changes → update data.js).
 
 ### Build Gotcha
 
@@ -37,6 +37,9 @@ skills/omh/SKILL.md              # Plugin skill definition
 .claude-plugin/plugin.json       # Plugin metadata
 test/*.test.mjs                  # Tests (Node test runner)
 output/                          # Generated artifacts (gitignored)
+  data.js                        # Minified data for browser
+  cache/                         # Incremental cache (gzip segments + mtime index)
+  pending/                       # Lightweight mode deltas (plain JSON)
 ```
 
 ## Dashboard Pages

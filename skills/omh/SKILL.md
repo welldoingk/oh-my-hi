@@ -1,7 +1,7 @@
 ---
 name: omh
 description: Generate oh-my-hi dashboard. Visual catalog and usage/token analysis of skills, agents, plugins, hooks, memory, MCP servers, rules, and principles. Triggered by "/omh", "harness status", "dashboard", etc.
-argument-hint: "[--data-only] [--enable-auto] [--disable-auto] [--status] [--help]"
+argument-hint: "[--data-only] [--enable-auto] [--disable-auto] [--status] [--update] [--help]"
 ---
 
 # oh-my-hi
@@ -15,6 +15,7 @@ Generates a full harness insights dashboard and opens it in the browser.
 - `/omh --enable-auto` — Enable automatic rebuild on session end
 - `/omh --disable-auto` — Disable automatic rebuild
 - `/omh --status` — Check auto-refresh status
+- `/omh --update` — Check and install latest version
 - `/omh --help` — Show help
 
 ## First Run Guide

@@ -34,14 +34,6 @@ claude plugin install oh-my-hi
 /plugin install oh-my-hi@oh-my-hi
 ```
 
-> Run the same commands to update to the latest version.
-
-> **⚠️ Update caveat:** Due to a [known issue](https://github.com/anthropics/claude-code/issues/37252) in Claude Code's plugin system, `plugin install` may not detect new versions from the cached marketplace. If the update is not applied, pull the marketplace manually first:
-> ```bash
-> git -C "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/marketplaces/oh-my-hi" pull origin main
-> ```
-> Then run the install command again.
-
 ## Usage
 
 Run in Claude Code:
@@ -57,9 +49,10 @@ This will parse your harness data, build the dashboard, and open it in your brow
 | Command | Description |
 |---------|-------------|
 | `/omh` | Full build — parse data, build web-ui, open in browser |
-| `/omh --data-only` | Regenerate data + web-ui without opening browser |
+| `/omh --data-only` | Lightweight data collection (skip dashboard build) |
 | `/omh --enable-auto` | Auto-rebuild on session end (registers Stop hook) |
 | `/omh --disable-auto` | Disable auto-rebuild |
+| `/omh --update` | Check and install latest version |
 | `/omh --status` | Check auto-rebuild status |
 | `/omh <path>` | Build with specific project paths only |
 
@@ -71,7 +64,15 @@ Enable automatic data refresh so the dashboard stays up to date:
 /omh --enable-auto
 ```
 
-This registers a Stop hook that rebuilds the dashboard data whenever a Claude Code session ends. Refresh the browser tab to see the latest data.
+This registers a Stop hook that collects data whenever a Claude Code session ends. The dashboard data (`data.js`) is updated incrementally — just refresh the browser tab to see the latest data.
+
+### Update
+
+```
+/omh --update
+```
+
+Checks for new versions and updates the plugin. An update check also runs automatically once per day when using `/omh`.
 
 ## Guide
 
@@ -82,7 +83,7 @@ See **[GUIDE.md](GUIDE.md)** for a detailed walkthrough of each dashboard sectio
 1. **Parse** — Reads your Claude Code config directory for skills, agents, plugins, hooks, memory, MCP servers, rules, principles, commands, teams, plans, and usage transcripts
 2. **Analyze** — Extracts token usage, prompt stats, response latency, activity patterns from `.jsonl` transcripts
 3. **Classify** — Auto-categorizes token usage into work types (code editing, docs, planning, etc.) based on skill/agent descriptions. Saves to `task-categories.json` for user customization
-4. **Build** — Generates a single `index.html` with all data, CSS, JS, and locale inlined (works with `file://` protocol, no server needed)
+4. **Build** — Generates `index.html` (shell with CSS/JS) + `data.js` (minified data). Data is separated from the shell so that only data needs updating on refresh
 5. **Open** — On macOS, reuses an existing browser tab if found (AppleScript). On Windows/Linux, opens a new tab
 
 ## i18n

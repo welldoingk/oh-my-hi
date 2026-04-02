@@ -2964,21 +2964,6 @@
       + '<h1>❓ ' + t('helpTitle') + ' <a href="https://github.com/netil/oh-my-hi" target="_blank" style="font-size:14px;font-weight:400;color:var(--text-secondary);text-decoration:none;vertical-align:middle;margin-left:8px">GitHub ↗</a></h1>'
       + '</div>';
 
-    // Install / Update
-    html += '<div class="section">'
-      + '<div class="section-title">' + t('helpInstall') + '</div>'
-      + '<div class="card help-card"><p>' + t('helpInstallDesc') + '</p>'
-      + '<pre style="margin:8px 0 0;padding:8px 12px;background:#1a1b1e;color:#e0e0e0;border-radius:6px;font-size:13px;line-height:1.6"><code>'
-      + '<span style="color:#6c757d"># ' + t('helpUpdateCli') + '</span>\n'
-      + '$ claude plugin marketplace add netil/oh-my-hi\n'
-      + '$ claude plugin install oh-my-hi\n\n'
-      + '<span style="color:#6c757d"># ' + t('helpUpdateSession') + '</span>\n'
-      + '/plugin marketplace add netil/oh-my-hi\n'
-      + '/plugin install oh-my-hi@oh-my-hi'
-      + '</code></pre>'
-      + '<p style="margin:10px 0 0;font-size:12px;color:var(--text-secondary);line-height:1.6">' + t('helpUpdateCaveat') + '</p>'
-      + '</div></div>';
-
     // Parameters
     html += '<div class="section">'
       + '<div class="section-title">' + t('helpParams') + '</div>'
@@ -2988,6 +2973,7 @@
       + '<tr><td class="help-param-code"><code>/omh --data-only</code></td><td>' + t('helpParamDataOnly') + '</td></tr>'
       + '<tr><td class="help-param-code"><code>/omh --enable-auto</code></td><td>' + t('helpParamEnableAuto') + '</td></tr>'
       + '<tr><td class="help-param-code"><code>/omh --disable-auto</code></td><td>' + t('helpParamDisableAuto') + '</td></tr>'
+      + '<tr><td class="help-param-code"><code>/omh --update</code></td><td>' + t('helpParamUpdate') + '</td></tr>'
       + '<tr><td class="help-param-code"><code>/omh --status</code></td><td>' + t('helpParamStatus') + '</td></tr>'
       + '<tr><td class="help-param-code"><code>/omh &lt;path&gt; [path...]</code></td><td>' + t('helpParamPaths') + '</td></tr>'
       + '</tbody></table>'
@@ -4039,6 +4025,16 @@
     document.body.prepend(banner);
   }
 
+  // ── Partial data banner ──
+  function showPartialBanner() {
+    if (!DATA._partial) return;
+    const banner = document.createElement('div');
+    banner.className = 'partial-banner';
+    banner.innerHTML = '<span class="partial-spinner"></span><span>' + t('partialBannerMsg') + '</span>';
+    document.body.prepend(banner);
+  }
+
   // ── Boot ──
   init();
+  showPartialBanner();
   checkDataVersion();

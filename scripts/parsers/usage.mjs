@@ -2,11 +2,15 @@
 import fs from 'fs';
 import fsp from 'fs/promises';
 import path from 'path';
+import os from 'os';
+import { gzipSync, gunzipSync } from 'zlib';
+
+const PARALLEL_CONCURRENCY = Math.max(os.cpus().length, 4);
 
 /**
  * Run async functions in parallel with concurrency limit
  */
-async function parallelMap(items, fn, concurrency = 10) {
+async function parallelMap(items, fn, concurrency = PARALLEL_CONCURRENCY) {
   const results = [];
   let index = 0;
   async function worker() {
@@ -17,6 +21,422 @@ async function parallelMap(items, fn, concurrency = 10) {
   }
   await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
   return results;
+}
+
+// ── Incremental Cache ──
+
+// Key shortening map for cache minification (same pattern as inline HTML)
+const CACHE_KEY_MAP = {
+  timestamp: 'ts', model: 'm', inputTokens: 'it', outputTokens: 'ot',
+  cacheRead: 'cr', cacheCreation: 'cc', rawInput: 'ri', context: 'cx',
+  contextName: 'cn', sessionId: 'sid', latencyMs: 'ms', charLen: 'cl',
+  name: 'n', tool: 't',
+};
+const CACHE_KEY_REV = Object.fromEntries(Object.entries(CACHE_KEY_MAP).map(([k, v]) => [v, k]));
+
+/**
+ * Minify a cache result for disk storage.
+ * - Shortens keys in array entries
+ * - Interns repeated string values (model, context, contextName, sessionId)
+ */
+function minifyCacheResult(result) {
+  const modelSet = new Set();
+  const ctxSet = new Set();
+  const cnSet = new Set();
+  const sidSet = new Set();
+
+  // Collect unique strings across all arrays
+  for (const arr of Object.values(result)) {
+    if (!Array.isArray(arr)) continue;
+    for (const e of arr) {
+      if (e.model != null) modelSet.add(e.model);
+      if (e.context != null) ctxSet.add(e.context);
+      if (e.contextName != null) cnSet.add(e.contextName);
+      if (e.sessionId != null) sidSet.add(e.sessionId);
+    }
+  }
+
+  const models = [...modelSet];
+  const contexts = [...ctxSet];
+  const contextNames = [...cnSet];
+  const sessionIds = [...sidSet];
+  const mIdx = Object.fromEntries(models.map((v, i) => [v, i]));
+  const cxIdx = Object.fromEntries(contexts.map((v, i) => [v, i]));
+  const cnIdx = Object.fromEntries(contextNames.map((v, i) => [v, i]));
+  const sidIdx = Object.fromEntries(sessionIds.map((v, i) => [v, i]));
+
+  // Shorten keys and replace strings with indices
+  const out = {};
+  for (const [field, arr] of Object.entries(result)) {
+    if (!Array.isArray(arr)) { out[field] = arr; continue; }
+    out[field] = arr.map(e => {
+      const o = {};
+      for (const [k, v] of Object.entries(e)) {
+        const sk = CACHE_KEY_MAP[k] || k;
+        if (k === 'model') o[sk] = v != null ? mIdx[v] : v;
+        else if (k === 'context') o[sk] = v != null ? cxIdx[v] : v;
+        else if (k === 'contextName') o[sk] = v != null ? cnIdx[v] : v;
+        else if (k === 'sessionId') o[sk] = v != null ? sidIdx[v] : v;
+        else o[sk] = v;
+      }
+      return o;
+    });
+  }
+  out._intern = { m: models, cx: contexts, cn: contextNames, sid: sessionIds };
+  return out;
+}
+
+/**
+ * Restore a minified cache result to full-key format.
+ */
+function restoreCacheResult(minResult) {
+  const intern = minResult._intern;
+  if (!intern) return minResult; // not minified (legacy cache)
+
+  const out = {};
+  for (const [field, arr] of Object.entries(minResult)) {
+    if (field === '_intern') continue;
+    if (!Array.isArray(arr)) { out[field] = arr; continue; }
+    out[field] = arr.map(e => {
+      const o = {};
+      for (const [k, v] of Object.entries(e)) {
+        const rk = CACHE_KEY_REV[k] || k;
+        if (rk === 'model') o[rk] = v != null ? intern.m[v] : v;
+        else if (rk === 'context') o[rk] = v != null ? intern.cx[v] : v;
+        else if (rk === 'contextName') o[rk] = v != null ? intern.cn[v] : v;
+        else if (rk === 'sessionId') o[rk] = v != null ? intern.sid[v] : v;
+        else o[rk] = v;
+      }
+      return o;
+    });
+  }
+  return out;
+}
+
+// ── Segment-based Cache I/O ──
+// Cache dir contains immutable gzipped segments + optional compacted base.
+// On save, only new entries are written as a new segment.
+// On load, base + all segments are merged (later overrides earlier).
+// Compaction merges all into a new base when segment count exceeds threshold.
+
+const COMPACT_THRESHOLD = 50;
+
+/**
+ * Derive cache directory from the legacy cachePath.
+ * "output/transcript-cache.json" → "output/cache/"
+ */
+function cacheDir(cachePath) {
+  return path.join(path.dirname(cachePath), 'cache');
+}
+
+/**
+ * Read a single gzipped JSON cache file. Returns {} on any error.
+ */
+function readCacheFile(filePath) {
+  try {
+    return JSON.parse(gunzipSync(fs.readFileSync(filePath)).toString('utf8'));
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Write a gzipped JSON cache file.
+ */
+function writeCacheFile(filePath, data) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, gzipSync(JSON.stringify(data), { level: 1 }));
+}
+
+/**
+ * Load transcript cache by merging base + all segments.
+ * Also migrates legacy formats (single JSON, year-split gz).
+ * @param {string} cachePath - legacy base path (used to derive cache dir)
+ * @returns {object} merged cache
+ */
+export function loadTranscriptCache(cachePath) {
+  if (!cachePath) return {};
+
+  const dir = cacheDir(cachePath);
+  const cache = {};
+
+  // Migrate legacy single-file JSON cache
+  if (fs.existsSync(cachePath)) {
+    try {
+      Object.assign(cache, JSON.parse(fs.readFileSync(cachePath, 'utf8')));
+      fs.unlinkSync(cachePath);
+    } catch { /* ignore corrupt legacy */ }
+  }
+
+  if (!fs.existsSync(dir)) return cache;
+
+  // Read files sorted: base first, then segments in order
+  const files = fs.readdirSync(dir).filter(f => f.endsWith('.json.gz')).sort();
+  for (const f of files) {
+    const data = readCacheFile(path.join(dir, f));
+    Object.assign(cache, data);
+  }
+
+  // Restore minified results
+  for (const key of Object.keys(cache)) {
+    if (cache[key]?.result?._intern) {
+      cache[key].result = restoreCacheResult(cache[key].result);
+    }
+  }
+  return cache;
+}
+
+/**
+ * Save only newly parsed entries as a new segment file.
+ * Triggers compaction when segment count exceeds threshold.
+ * @param {string} cachePath - legacy base path
+ * @param {object} cache - full in-memory cache
+ */
+export function saveTranscriptCache(cachePath, cache) {
+  if (!cachePath) return;
+  try {
+    const dir = cacheDir(cachePath);
+    fs.mkdirSync(dir, { recursive: true });
+
+    // Collect only entries that were parsed in this run
+    const newEntries = {};
+    for (const [key, entry] of Object.entries(cache)) {
+      if (key.startsWith('_')) continue;
+      if (!entry?._new) continue;
+      const { _new, ...clean } = entry;
+      newEntries[key] = { ...clean, result: minifyCacheResult(clean.result) };
+    }
+
+    if (Object.keys(newEntries).length === 0) return;
+
+    // Write new segment with timestamp-based name (sorts chronologically)
+    const ts = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
+    writeCacheFile(path.join(dir, `seg-${ts}.json.gz`), newEntries);
+
+    // Clean _new flags from in-memory cache
+    for (const key of Object.keys(cache)) {
+      if (cache[key]?._new) delete cache[key]._new;
+    }
+
+    // Compact if too many segments
+    const files = fs.readdirSync(dir).filter(f => f.startsWith('seg-'));
+    if (files.length >= COMPACT_THRESHOLD) {
+      compactCache(cachePath, cache);
+    }
+  } catch { /* best effort */ }
+}
+
+/**
+ * Merge all segments + base into a single new base file.
+ * Removes old segments and base after successful compaction.
+ */
+function compactCache(cachePath, cache) {
+  const dir = cacheDir(cachePath);
+
+  // Build compacted data from in-memory cache (already fully merged)
+  const compacted = {};
+  for (const [key, entry] of Object.entries(cache)) {
+    if (key.startsWith('_') || !entry?.result) continue;
+    compacted[key] = { ...entry, result: minifyCacheResult(entry.result) };
+    delete compacted[key]._new;
+  }
+
+  const ts = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
+  const basePath = path.join(dir, `base-${ts}.json.gz`);
+  writeCacheFile(basePath, compacted);
+
+  // Remove old files (keep only the new base)
+  for (const f of fs.readdirSync(dir).filter(f => f.endsWith('.json.gz'))) {
+    const fp = path.join(dir, f);
+    if (fp !== basePath) {
+      try { fs.unlinkSync(fp); } catch { /* best effort */ }
+    }
+  }
+}
+
+// ── Pending Files (lightweight auto-refresh) ──
+
+/**
+ * Derive pending directory from cachePath.
+ * "output/transcript-cache.json" → "output/pending/"
+ */
+function pendingDir(cachePath) {
+  return path.join(path.dirname(cachePath), 'pending');
+}
+
+/**
+ * Save newly parsed entries as a plain JSON pending file (no gzip, no minification).
+ * Designed for fast writes during session-end hooks.
+ */
+export function savePending(cachePath, cache) {
+  if (!cachePath) return;
+  try {
+    const newEntries = {};
+    for (const [key, entry] of Object.entries(cache)) {
+      if (key.startsWith('_') || !entry?._new) continue;
+      const { _new, ...clean } = entry;
+      newEntries[key] = clean;
+    }
+    if (Object.keys(newEntries).length === 0) return;
+
+    const dir = pendingDir(cachePath);
+    fs.mkdirSync(dir, { recursive: true });
+    const ts = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
+    fs.writeFileSync(path.join(dir, `${ts}.json`), JSON.stringify(newEntries), 'utf8');
+
+    // Clean _new flags
+    for (const key of Object.keys(cache)) {
+      if (cache[key]?._new) delete cache[key]._new;
+    }
+  } catch { /* best effort */ }
+}
+
+/**
+ * Merge all pending files into the cache object.
+ * Returns the number of pending files merged.
+ */
+export function mergePending(cachePath, cache) {
+  if (!cachePath) return 0;
+  const dir = pendingDir(cachePath);
+  if (!fs.existsSync(dir)) return 0;
+
+  const files = fs.readdirSync(dir).filter(f => f.endsWith('.json')).sort();
+  if (files.length === 0) return 0;
+
+  for (const f of files) {
+    try {
+      const data = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+      for (const [key, entry] of Object.entries(data)) {
+        cache[key] = { ...entry, _new: true };
+      }
+    } catch { /* skip corrupt */ }
+  }
+
+  // Remove pending files after merge
+  for (const f of files) {
+    try { fs.unlinkSync(path.join(dir, f)); } catch { /* best effort */ }
+  }
+  // Remove pending dir if empty
+  try { fs.rmdirSync(dir); } catch { /* not empty or already gone */ }
+
+  return files.length;
+}
+
+/**
+ * Check if there are pending files waiting to be merged.
+ */
+export function hasPending(cachePath) {
+  if (!cachePath) return false;
+  const dir = pendingDir(cachePath);
+  if (!fs.existsSync(dir)) return false;
+  try {
+    return fs.readdirSync(dir).some(f => f.endsWith('.json'));
+  } catch { return false; }
+}
+
+// ── Mtime Index (lightweight change detection without full cache load) ──
+
+/**
+ * Path to the mtime index file.
+ */
+function mtimeIndexPath(cachePath) {
+  return path.join(cacheDir(cachePath), 'mtime-index.json');
+}
+
+/**
+ * Find longest common directory prefix across all paths.
+ */
+function commonPrefix(paths) {
+  if (paths.length === 0) return '';
+  let prefix = path.dirname(paths[0]);
+  for (const p of paths) {
+    while (prefix && !p.startsWith(prefix + '/')) {
+      prefix = path.dirname(prefix);
+    }
+  }
+  return prefix;
+}
+
+/**
+ * Load mtime index: returns { filePath: mtimeMs } with absolute paths restored.
+ * File format: { _base: "/common/prefix", "relative/path": mtimeMs, ... }
+ */
+export function loadMtimeIndex(cachePath) {
+  if (!cachePath) return {};
+  try {
+    const raw = JSON.parse(fs.readFileSync(mtimeIndexPath(cachePath), 'utf8'));
+    const base = raw._base || '';
+    const result = {};
+    for (const [key, val] of Object.entries(raw)) {
+      if (key === '_base') continue;
+      result[base ? path.join(base, key) : key] = val;
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Save mtime index from the full cache object.
+ * Stores paths relative to common prefix to reduce file size.
+ */
+export function saveMtimeIndex(cachePath, cache) {
+  if (!cachePath) return;
+  try {
+    const entries = [];
+    for (const [key, entry] of Object.entries(cache)) {
+      if (key.startsWith('_') || !entry?.mtimeMs) continue;
+      entries.push([key, entry.mtimeMs]);
+    }
+    const base = commonPrefix(entries.map(e => e[0]));
+    const index = { _base: base };
+    for (const [absPath, mtimeMs] of entries) {
+      index[absPath.slice(base.length + 1)] = mtimeMs;
+    }
+    const fp = mtimeIndexPath(cachePath);
+    fs.mkdirSync(path.dirname(fp), { recursive: true });
+    fs.writeFileSync(fp, JSON.stringify(index), 'utf8');
+  } catch { /* best effort */ }
+}
+
+/**
+ * Parse a transcript file with cache support.
+ * Always parses without cutoff (full data) so cache is reusable across time ranges.
+ */
+async function cachedParseTranscriptFile(fp, cache) {
+  let stat;
+  try { stat = fs.statSync(fp); } catch { return null; }
+  const cached = cache[fp];
+  if (cached && cached.mtimeMs === stat.mtimeMs) {
+    // Full cache hit (has result) or mtime-only stub (skip — already processed)
+    if (cached.size === stat.size) return cached.result;
+    // Mtime match but size=0 means mtime-only stub from lightweight mode — skip
+    if (cached.size === 0) return null;
+  }
+  const result = await parseTranscriptFile(fp, 0);
+  cache[fp] = { mtimeMs: stat.mtimeMs, size: stat.size, result, _new: true };
+  cache._parsed = (cache._parsed || 0) + 1;
+  return result;
+}
+
+/**
+ * Apply cutoff filter to merged transcript results
+ */
+function applyCutoff(merged, cutoffMs) {
+  if (!cutoffMs) return merged;
+  const filterByTs = (arr) => arr.filter(e => {
+    const ts = typeof e.timestamp === 'number' ? e.timestamp : new Date(e.timestamp).getTime();
+    return ts >= cutoffMs;
+  });
+  return {
+    skills: filterByTs(merged.skills),
+    agents: filterByTs(merged.agents),
+    mcpCalls: filterByTs(merged.mcpCalls),
+    tokenEntries: filterByTs(merged.tokenEntries),
+    promptStats: filterByTs(merged.promptStats),
+    latencyEntries: filterByTs(merged.latencyEntries),
+  };
 }
 
 // Built-in Claude CLI slash commands (to be filtered out)
@@ -225,15 +645,15 @@ async function parseTranscriptFile(jsonlPath, cutoffMs) {
 
 /**
  * Parse all transcript JSONL files under projects/
- * Pass 1: fast filtering by file mtime
- * Pass 2: precise filtering by in-file timestamp
+ * Uses incremental cache: only re-parses files whose mtime/size changed.
+ * @param {string} configDir
+ * @param {number} cutoffMs - applied as post-filter (cache stores full data)
+ * @param {object} cache - mutable cache object (updated in place)
+ * @returns {object} merged transcript results (cutoff-filtered)
  */
-async function parseTranscripts(configDir, cutoffMs) {
+async function parseTranscripts(configDir, cutoffMs, cache = {}) {
   const projectsDir = path.join(configDir, 'projects');
   if (!fs.existsSync(projectsDir)) return { skills: [], agents: [], mcpCalls: [], tokenEntries: [], promptStats: [], latencyEntries: [] };
-
-  // Subtract one day from cutoffMs for mtime filter margin
-  const mtimeCutoff = cutoffMs ? cutoffMs - 24 * 60 * 60 * 1000 : 0;
 
   // Phase 1: Collect all candidate file paths (sync — fast directory scan)
   const filePaths = [];
@@ -246,18 +666,14 @@ async function parseTranscripts(configDir, cutoffMs) {
 
     for (const file of files) {
       if (!file.isFile() || !file.name.endsWith('.jsonl')) continue;
-      const filePath = path.join(projPath, file.name);
-      if (mtimeCutoff) {
-        try { if (fs.statSync(filePath).mtimeMs < mtimeCutoff) continue; } catch { continue; }
-      }
-      filePaths.push(filePath);
+      filePaths.push(path.join(projPath, file.name));
     }
   }
 
-  // Phase 2: Parse all files in parallel
-  const results = await parallelMap(filePaths, fp => parseTranscriptFile(fp, cutoffMs));
+  // Phase 2: Parse all files in parallel (with cache)
+  const results = await parallelMap(filePaths, fp => cachedParseTranscriptFile(fp, cache));
 
-  return mergeTranscriptResults(results);
+  return applyCutoff(mergeTranscriptResults(results.filter(Boolean)), cutoffMs);
 }
 
 /**
@@ -281,19 +697,6 @@ async function parseDailyActivity(configDir, cutoffMs) {
 }
 
 /**
- * Parse usage data
- * @param {string} configDir - Claude config root path
- * @param {number} days - 0 for all, >0 for last N days
- * @returns {{
- *   commands: Array<{name, timestamp, project, sessionId}>,
- *   skills: Array<{name, timestamp, sessionId}>,
- *   agents: Array<{name, timestamp, sessionId}>,
- *   mcpCalls: Array<{name, tool, timestamp, sessionId}>,
- *   tokenEntries: Array<{timestamp, model, inputTokens, outputTokens, cacheRead, cacheCreation, rawInput}>,
- *   dailyActivity: Array<{date, messageCount, sessionCount, toolCallCount}>,
- * }}
- */
-/**
  * Merge multiple transcript parse results into one
  */
 function mergeTranscriptResults(results) {
@@ -309,30 +712,48 @@ function mergeTranscriptResults(results) {
   return merged;
 }
 
-export async function parseUsage(configDir, days = 0, projectDir = null) {
+/**
+ * Parse usage data
+ * @param {string} configDir - Claude config root path
+ * @param {number} days - 0 for all, >0 for last N days
+ * @param {string|null} projectDir - single project dir, or null for global
+ * @param {object} [opts] - options
+ * @param {object} [opts.cache] - mutable transcript cache object
+ * @param {string} [opts.cachePath] - path to persist cache on disk
+ * @returns {object} parsed usage data + cache stats
+ */
+export async function parseUsage(configDir, days = 0, projectDir = null, opts = {}) {
   const cutoffMs = calcCutoff(days);
+  const cache = opts.cache ?? loadTranscriptCache(opts.cachePath);
+  if (cache._parsed == null) cache._parsed = 0;
 
   // Run commands, transcripts, and dailyActivity in parallel
   const [commands, transcriptResult, dailyActivity] = await Promise.all([
     parseCommands(configDir, cutoffMs),
     projectDir
-      ? parseProjectTranscripts(projectDir, cutoffMs)
-      : parseTranscripts(configDir, cutoffMs),
+      ? parseProjectTranscripts(projectDir, cutoffMs, cache)
+      : parseTranscripts(configDir, cutoffMs, cache),
     parseDailyActivity(configDir, cutoffMs),
   ]);
+
+  // Note: cache saving is handled by the caller (collectAllScopes) after all
+  // concurrent parseUsage calls complete, to avoid race conditions on _new flags.
+
   const { skills, agents, mcpCalls, tokenEntries, promptStats, latencyEntries } = transcriptResult;
 
-  return { commands, skills, agents, mcpCalls, tokenEntries, promptStats, latencyEntries, dailyActivity };
+  return {
+    commands, skills, agents, mcpCalls, tokenEntries, promptStats, latencyEntries, dailyActivity,
+    _cacheStats: { parsed: cache._parsed || 0, total: Object.keys(cache).length - 1 },
+  };
 }
 
 /**
  * Parse transcripts from a single project directory only
+ * Uses incremental cache like parseTranscripts.
  */
-async function parseProjectTranscripts(projDirPath, cutoffMs) {
+async function parseProjectTranscripts(projDirPath, cutoffMs, cache = {}) {
   const empty = { skills: [], agents: [], mcpCalls: [], tokenEntries: [], promptStats: [], latencyEntries: [] };
   if (!fs.existsSync(projDirPath)) return empty;
-
-  const mtimeCutoff = cutoffMs ? cutoffMs - 24 * 60 * 60 * 1000 : 0;
 
   // Phase 1: Collect all candidate file paths (sync — fast directory scan)
   const filePaths = [];
@@ -344,11 +765,7 @@ async function parseProjectTranscripts(projDirPath, cutoffMs) {
 
     for (const file of files) {
       if (!file.isFile() || !file.name.endsWith('.jsonl')) continue;
-      const filePath = path.join(dir, file.name);
-      if (mtimeCutoff) {
-        try { if (fs.statSync(filePath).mtimeMs < mtimeCutoff) continue; } catch { continue; }
-      }
-      filePaths.push(filePath);
+      filePaths.push(path.join(dir, file.name));
     }
 
     // Also check session subdirectories
@@ -360,18 +777,14 @@ async function parseProjectTranscripts(projDirPath, cutoffMs) {
         try { subFiles = fs.readdirSync(subDir, { withFileTypes: true }); } catch { continue; }
         for (const sf of subFiles) {
           if (!sf.isFile() || !sf.name.endsWith('.jsonl')) continue;
-          const fp = path.join(subDir, sf.name);
-          if (mtimeCutoff) {
-            try { if (fs.statSync(fp).mtimeMs < mtimeCutoff) continue; } catch { continue; }
-          }
-          filePaths.push(fp);
+          filePaths.push(path.join(subDir, sf.name));
         }
       }
     } catch { /* skip */ }
   }
 
-  // Phase 2: Parse all files in parallel
-  const results = await parallelMap(filePaths, fp => parseTranscriptFile(fp, cutoffMs));
+  // Phase 2: Parse all files in parallel (with cache)
+  const results = await parallelMap(filePaths, fp => cachedParseTranscriptFile(fp, cache));
 
-  return mergeTranscriptResults(results);
+  return applyCutoff(mergeTranscriptResults(results.filter(Boolean)), cutoffMs);
 }

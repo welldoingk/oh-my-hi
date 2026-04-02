@@ -27,7 +27,7 @@ import { parseTeams } from './parsers/teams.mjs';
 import { parsePlans } from './parsers/plans.mjs';
 import { parseTodos } from './parsers/todos.mjs';
 import { parseConfigFiles } from './parsers/config-files.mjs';
-import { parseUsage } from './parsers/usage.mjs';
+import { parseUsage, loadTranscriptCache, saveTranscriptCache, savePending, mergePending, hasPending, loadMtimeIndex, saveMtimeIndex } from './parsers/usage.mjs';
 import { detectScopes } from './parsers/scopes.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -49,9 +49,63 @@ Usage:
   oh-my-hi --enable-auto      Enable auto data refresh on session end
   oh-my-hi --disable-auto     Disable auto data refresh
   oh-my-hi --status           Check auto-refresh status
+  oh-my-hi --update           Check and install latest version
   oh-my-hi <path> [path...]   Include specified projects only
   oh-my-hi --help             Show help`);
   process.exit(0);
+}
+
+// ── Update ──
+if (args.includes('--update')) {
+  runUpdate().then(() => process.exit(0)).catch(() => process.exit(1));
+}
+
+async function runUpdate() {
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf-8'));
+  console.log(`oh-my-hi: current version v${pkg.version}`);
+  console.log('oh-my-hi: checking for updates...');
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    const res = await fetch(`https://registry.npmjs.org/${pkg.name}/latest`, {
+      signal: controller.signal, headers: { 'Accept': 'application/json' },
+    });
+    clearTimeout(timeout);
+    if (!res.ok) throw new Error('registry request failed');
+    const data = await res.json();
+
+    // Cache check result
+    const UPDATE_CHECK_FILE = path.join(OUTPUT, 'cache', '.update-check');
+    try {
+      fs.mkdirSync(path.dirname(UPDATE_CHECK_FILE), { recursive: true });
+      fs.writeFileSync(UPDATE_CHECK_FILE, JSON.stringify({ timestamp: Date.now(), current: pkg.version, latest: data.version }), 'utf8');
+    } catch { /* best effort */ }
+
+    if (data.version === pkg.version) {
+      console.log('oh-my-hi: ✅ already up to date');
+      return;
+    }
+    console.log(`oh-my-hi: v${data.version} available`);
+    // Detect marketplace name from plugin cache path
+    const pluginCacheDir = path.join(CLAUDE_CONFIG_DIR, 'plugins', 'cache');
+    let marketplace = 'oh-my-hi';
+    if (fs.existsSync(pluginCacheDir)) {
+      for (const entry of fs.readdirSync(pluginCacheDir, { withFileTypes: true })) {
+        if (!entry.isDirectory() || entry.name.startsWith('temp_')) continue;
+        if (fs.existsSync(path.join(pluginCacheDir, entry.name, pkg.name))) {
+          marketplace = entry.name;
+          break;
+        }
+      }
+    }
+    console.log(`oh-my-hi: updating v${pkg.version} → v${data.version}...`);
+    execSync(`claude plugin update ${pkg.name}@${marketplace}`, { stdio: 'inherit' });
+    console.log(`oh-my-hi: ✅ updated to v${data.version}`);
+  } catch (e) {
+    if (e.name === 'AbortError') console.log('oh-my-hi: ❌ network timeout');
+    else console.log('oh-my-hi: ❌ update failed —', e.message);
+    throw e;
+  }
 }
 
 // ── Auto-refresh hook management ──
@@ -125,33 +179,195 @@ if (args.includes('--status')) { showStatus(); process.exit(0); }
 
 const extraPaths = args.filter(a => !a.startsWith('-'));
 
+const CACHE_PATH = path.join(OUTPUT, 'transcript-cache.json');
+
 async function main() {
+  const dataOnly = args.includes('--data-only');
+  const indexPath = path.join(OUTPUT, 'index.html');
+  const dataPath = path.join(OUTPUT, 'data.json');
+
+  // Ensure output directory exists
+  fs.mkdirSync(OUTPUT, { recursive: true });
+
+  // ── Migration detection ──
+  const dataJsPath = path.join(OUTPUT, 'data.js');
+  const needsMigration = fs.existsSync(dataPath) && !fs.existsSync(dataJsPath);
+  const needsVersionUpdate = needsHtmlRebuild(indexPath);
+
+  if (needsMigration || needsVersionUpdate) {
+    console.log('oh-my-hi: data structure changed — rebuilding (one-time)...');
+  }
+
+  // ── Lightweight mode (--data-only, triggered by Stop hook) ──
+  // Parse changed files, update data.js for browser, save pending for cache.
+  if (dataOnly) {
+    if (!needsMigration && !needsVersionUpdate) {
+      console.log('oh-my-hi: collecting data (lightweight)...');
+    }
+
+    // Load mtime index (tiny file) instead of full cache
+    const mtimeIndex = loadMtimeIndex(CACHE_PATH);
+    const cache = {};
+    for (const [fp, mtimeMs] of Object.entries(mtimeIndex)) {
+      cache[fp] = { mtimeMs, size: 0, result: null };
+    }
+    cache._parsed = 0;
+
+    // Parse only changed transcript files
+    const scopes = detectScopes(CLAUDE_CONFIG_DIR, extraPaths);
+    const projectScopes = scopes.filter(s => s.type !== 'global');
+    await Promise.all([
+      parseUsage(CLAUDE_CONFIG_DIR, 0, null, { cache }),
+      ...projectScopes.map(s =>
+        fs.existsSync(s.configPath) ? parseUsage(CLAUDE_CONFIG_DIR, 0, s.configPath, { cache }) : Promise.resolve()
+      ),
+    ]);
+
+    const parsed = cache._parsed || 0;
+    const total = Object.keys(cache).filter(k => !k.startsWith('_')).length;
+    console.log(`  transcripts: ${total} files (${parsed} parsed, ${total - parsed} skipped)`);
+
+    // Save as pending + update mtime index
+    savePending(CACHE_PATH, cache);
+    saveMtimeIndex(CACHE_PATH, cache);
+
+    // Build index.html if missing or version changed
+    if (needsHtmlRebuild(indexPath)) {
+      writeHtml(indexPath, detectSystemLocale());
+    }
+
+    // Update data.js by merging new entries into existing data.json
+    const dataJsPath = path.join(OUTPUT, 'data.js');
+    const dataJsMissing = !fs.existsSync(dataJsPath);
+
+    if ((parsed > 0 || dataJsMissing) && fs.existsSync(dataPath)) {
+      try {
+        const existingData = JSON.parse(fs.readFileSync(dataPath, 'utf-8'));
+        // Merge new usage entries from freshly parsed files
+        if (parsed > 0) {
+          for (const [key, entry] of Object.entries(cache)) {
+            if (key.startsWith('_') || !entry?._new || !entry.result) continue;
+            const r = entry.result;
+            const globalUsage = existingData.scopeData?.global?.usage;
+            if (globalUsage) {
+              for (const field of ['skills', 'agents', 'mcpCalls', 'tokenEntries', 'promptStats', 'latencyEntries']) {
+                if (r[field]?.length) globalUsage[field].push(...r[field]);
+              }
+            }
+          }
+        }
+        existingData.generatedAt = new Date().toISOString();
+        writeDataJs(existingData, dataPath);
+        console.log('  data.js updated');
+      } catch { /* skip — full rebuild on next /omh */ }
+    }
+
+    console.log('oh-my-hi: done (lightweight)');
+    return;
+  }
+
+  // ── Full mode (user-initiated /omh) ──
   console.log('oh-my-hi: collecting data...');
 
-  // 1) Detect scopes
   const scopes = detectScopes(CLAUDE_CONFIG_DIR, extraPaths);
   console.log(`  scopes: ${scopes.length} detected`);
 
-  // 2) Collect global data + per-project data in parallel
-  const projectScopes = scopes.filter(s => s.type !== 'global');
+  const systemLocale = detectSystemLocale();
 
-  const [globalData, ...projectResults] = await Promise.all([
-    collectScopeData(CLAUDE_CONFIG_DIR),
-    ...projectScopes.map(scope =>
-      !fs.existsSync(scope.configPath)
-        ? Promise.resolve({ id: scope.id, data: emptyScopeData() })
-        : collectProjectData(scope.configPath, scope.projectPath).then(data => ({ id: scope.id, data }))
-    ),
-  ]);
-  console.log(`  global: ${globalData.skills.length} skills, ${globalData.agents.length} agents, ${globalData.plugins.length} plugins`);
+  // Check cache state to decide progressive mode
+  const cacheDirPath = path.join(OUTPUT, 'cache');
+  const cacheExists = fs.existsSync(CACHE_PATH) || fs.existsSync(cacheDirPath);
+  const pendingExists = hasPending(CACHE_PATH);
 
-  // 3) Assemble scope data
-  const scopeData = { global: globalData };
-  for (const result of projectResults) {
-    scopeData[result.id] = result.data;
+  // Rebuild index.html only when needed (first run or version change)
+  if (needsHtmlRebuild(indexPath)) {
+    writeHtml(indexPath, systemLocale);
   }
 
-  // 4) Detect system locale (macOS: AppleLanguages first, others: LANG env var)
+  if (!cacheExists && !pendingExists) {
+    // Progressive mode: no cache at all
+    console.log('oh-my-hi: progressive mode — quick preview first...');
+
+    const cache = {};
+    const phase1ScopeData = await collectAllScopes(scopes, { days: 7, cache });
+    const phase1Data = buildDataObject(scopes, phase1ScopeData, systemLocale, { _partial: true });
+    writeDataJs(phase1Data, dataPath);
+    openOrRefreshBrowser(indexPath);
+    console.log('oh-my-hi: preview ready — loading full data in background...');
+
+    const phase2ScopeData = await collectAllScopes(scopes, { days: 0, cache, cachePath: CACHE_PATH });
+    const phase2Data = buildDataObject(scopes, phase2ScopeData, systemLocale);
+    writeDataJs(phase2Data, dataPath);
+    openOrRefreshBrowser(indexPath);
+    console.log('oh-my-hi: full data loaded — browser refreshed');
+  } else {
+    // Normal mode: load cache + merge pending + full data
+    const scopeData = await collectAllScopes(scopes, { days: 0, cachePath: CACHE_PATH });
+    const data = buildDataObject(scopes, scopeData, systemLocale);
+    writeDataJs(data, dataPath);
+    openOrRefreshBrowser(indexPath);
+  }
+
+  console.log('oh-my-hi: done');
+
+  // Auto-refresh status notice
+  const settings = readSettings();
+  if (!hasAutoHook(settings)) {
+    console.log('');
+    console.log('oh-my-hi: ⚠️ Auto data refresh is not configured.');
+    console.log('  → Enable auto-refresh on session end: /omh --enable-auto');
+    console.log('  → Manual refresh:                     /omh --data-only');
+  }
+
+  // Async update check (non-blocking, result awaited at end)
+  await checkForUpdate();
+}
+
+/** Check npm registry for newer version (non-blocking, cached for 24h) */
+async function checkForUpdate() {
+  const UPDATE_CHECK_FILE = path.join(OUTPUT, 'cache', '.update-check');
+  try {
+    // Skip if checked within last 24 hours
+    if (fs.existsSync(UPDATE_CHECK_FILE)) {
+      const lastCheck = JSON.parse(fs.readFileSync(UPDATE_CHECK_FILE, 'utf8'));
+      if (Date.now() - lastCheck.timestamp < 24 * 60 * 60 * 1000) {
+        if (lastCheck.latest && lastCheck.latest !== lastCheck.current) {
+          console.log(`\noh-my-hi: ✨ v${lastCheck.latest} available (current: v${lastCheck.current})`);
+          console.log('  → Update: /omh --update');
+        }
+        return;
+      }
+    }
+
+    const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf-8'));
+    const current = pkg.version;
+
+    // Fetch latest version from npm (with 3s timeout)
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+    const res = await fetch(`https://registry.npmjs.org/${pkg.name}/latest`, {
+      signal: controller.signal,
+      headers: { 'Accept': 'application/json' },
+    });
+    clearTimeout(timeout);
+
+    if (!res.ok) return;
+    const data = await res.json();
+    const latest = data.version;
+
+    // Cache the result
+    fs.mkdirSync(path.dirname(UPDATE_CHECK_FILE), { recursive: true });
+    fs.writeFileSync(UPDATE_CHECK_FILE, JSON.stringify({ timestamp: Date.now(), current, latest }), 'utf8');
+
+    if (latest && latest !== current) {
+      console.log(`\noh-my-hi: ✨ v${latest} available (current: v${current})`);
+      console.log('  → Update: /omh --update');
+    }
+  } catch { /* offline or error — silently skip */ }
+}
+
+/** Detect system locale */
+function detectSystemLocale() {
   let systemLocale = 'en';
   try {
     if (process.platform === 'darwin') {
@@ -166,84 +382,146 @@ async function main() {
       else if (lang.startsWith('zh')) systemLocale = 'zh';
     }
   } catch { /* fallback to en */ }
+  return systemLocale;
+}
 
-  // 5) Ensure output directory exists before writing task-categories
-  fs.mkdirSync(OUTPUT, { recursive: true });
+/** Collect all scopes (global + projects) with given options */
+async function collectAllScopes(scopes, { days = 0, cache, cachePath } = {}) {
+  const projectScopes = scopes.filter(s => s.type !== 'global');
+  // Load or reuse cache; reset parse counter for this collection round
+  const sharedCache = cache || (cachePath ? loadTranscriptCache(cachePath) : {});
 
-  // 5a) Build task categories dynamically from token data
-  const taskCategories = buildTaskCategories(scopeData);
+  // Merge pending files into cache (from previous --data-only runs)
+  if (cachePath) {
+    const pendingCount = mergePending(cachePath, sharedCache);
+    if (pendingCount > 0) console.log(`  pending: ${pendingCount} files merged`);
+  }
 
-  // 6) Build full data object
+  sharedCache._parsed = 0;
+  const usageOpts = { days, cache: sharedCache, cachePath };
+
+  const [globalData, ...projectResults] = await Promise.all([
+    collectScopeData(CLAUDE_CONFIG_DIR, usageOpts),
+    ...projectScopes.map(scope =>
+      !fs.existsSync(scope.configPath)
+        ? Promise.resolve({ id: scope.id, data: emptyScopeData() })
+        : collectProjectData(scope.configPath, scope.projectPath, usageOpts).then(data => ({ id: scope.id, data }))
+    ),
+  ]);
+
+  // Save cache once after all concurrent parseUsage calls complete
+  // This also consolidates any pending entries merged above into compressed segments
+  // Always attempt save — saveTranscriptCache internally checks for _new entries
+  if (cachePath) saveTranscriptCache(cachePath, sharedCache);
+  // Update mtime index for lightweight mode
+  if (cachePath) saveMtimeIndex(cachePath, sharedCache);
+
+  const totalFiles = Object.keys(sharedCache).filter(k => !k.startsWith('_')).length;
+  const parsed = Math.min(sharedCache._parsed || 0, totalFiles);
+  console.log(`  transcripts: ${totalFiles} files (${parsed} parsed, ${totalFiles - parsed} cached)`);
+  console.log(`  global: ${globalData.skills.length} skills, ${globalData.agents.length} agents, ${globalData.plugins.length} plugins`);
+
+  const scopeData = { global: globalData };
+  for (const result of projectResults) {
+    scopeData[result.id] = result.data;
+  }
+  return scopeData;
+}
+
+/** Build data object from scope data (strips internal _cacheStats) */
+function buildDataObject(scopes, scopeData, systemLocale, extra = {}) {
+  // Strip _cacheStats from usage data before building output
+  const cleanScopeData = {};
+  for (const [key, sdata] of Object.entries(scopeData)) {
+    if (sdata.usage?._cacheStats) {
+      const { _cacheStats, ...cleanUsage } = sdata.usage;
+      cleanScopeData[key] = { ...sdata, usage: cleanUsage };
+    } else {
+      cleanScopeData[key] = sdata;
+    }
+  }
+  const taskCategories = buildTaskCategories(cleanScopeData);
   const isDevBuild = fs.existsSync(path.join(ROOT, '.git'));
-  const data = {
+  return {
     scopes,
-    scopeData,
+    scopeData: cleanScopeData,
     taskCategories,
     generatedAt: new Date().toISOString(),
     configDir: CLAUDE_CONFIG_DIR,
     systemLocale,
     _devBuild: isDevBuild || undefined,
+    ...extra,
   };
-  const dataOnly = args.includes('--data-only');
-  const indexPath = path.join(OUTPUT, 'index.html');
-  const dataPath = path.join(OUTPUT, 'data.json');
+}
 
-  // 5a) data.json — always generated (for programmatic access)
-  const safeJson = JSON.stringify(data);
-  fs.writeFileSync(dataPath, safeJson, 'utf-8');
+// ── Minify usage data for browser (key shortening + sessionId indexing) ──
+const USAGE_KEY_MAP = {
+  timestamp: 'ts', model: 'm', inputTokens: 'it', outputTokens: 'ot',
+  cacheRead: 'cr', cacheCreation: 'cc', rawInput: 'ri', context: 'cx',
+  contextName: 'cn', sessionId: 'sid', latencyMs: 'ms', charLen: 'cl',
+  name: 'n', tool: 't', count: 'c', date: 'd', command: 'cmd', project: 'p',
+  messageCount: 'mc', sessionCount: 'sc', toolCallCount: 'tc',
+};
 
-  // 5a-2) Minify usage data for inline HTML (key shortening + sessionId indexing)
-  const USAGE_KEY_MAP = {
-    timestamp: 'ts', model: 'm', inputTokens: 'it', outputTokens: 'ot',
-    cacheRead: 'cr', cacheCreation: 'cc', rawInput: 'ri', context: 'cx',
-    contextName: 'cn', sessionId: 'sid', latencyMs: 'ms', charLen: 'cl',
-    name: 'n', tool: 't', count: 'c', date: 'd', command: 'cmd', project: 'p',
-    messageCount: 'mc', sessionCount: 'sc', toolCallCount: 'tc',
-  };
-  function minifyUsageData(scopeDataObj) {
-    const result = {};
-    for (const [scope, sdata] of Object.entries(scopeDataObj)) {
-      const copy = { ...sdata };
-      if (copy.usage) {
-        const u = copy.usage;
-        // Build sessionId lookup table
-        const sidSet = new Set();
-        for (const arr of Object.values(u)) {
-          if (!Array.isArray(arr)) continue;
-          for (const item of arr) {
-            if (item.sessionId != null) sidSet.add(item.sessionId);
-          }
+function minifyUsageData(scopeDataObj) {
+  const result = {};
+  for (const [scope, sdata] of Object.entries(scopeDataObj)) {
+    const copy = { ...sdata };
+    if (copy.usage) {
+      const u = copy.usage;
+      const sidSet = new Set();
+      for (const arr of Object.values(u)) {
+        if (!Array.isArray(arr)) continue;
+        for (const item of arr) {
+          if (item.sessionId != null) sidSet.add(item.sessionId);
         }
-        const sidList = [...sidSet];
-        const sidIndex = Object.fromEntries(sidList.map((s, i) => [s, i]));
-
-        // Shorten keys and replace sessionId with index
-        const minUsage = {};
-        for (const [field, arr] of Object.entries(u)) {
-          if (!Array.isArray(arr)) { minUsage[field] = arr; continue; }
-          minUsage[field] = arr.map(item => {
-            const obj = {};
-            for (const [k, v] of Object.entries(item)) {
-              if (k === 'sessionId') {
-                obj.sid = v != null ? sidIndex[v] : null;
-              } else {
-                obj[USAGE_KEY_MAP[k] || k] = v;
-              }
-            }
-            return obj;
-          });
-        }
-        minUsage._sidList = sidList;
-        copy.usage = minUsage;
       }
-      result[scope] = copy;
+      const sidList = [...sidSet];
+      const sidIndex = Object.fromEntries(sidList.map((s, i) => [s, i]));
+      const minUsage = {};
+      for (const [field, arr] of Object.entries(u)) {
+        if (!Array.isArray(arr)) { minUsage[field] = arr; continue; }
+        minUsage[field] = arr.map(item => {
+          const obj = {};
+          for (const [k, v] of Object.entries(item)) {
+            if (k === 'sessionId') obj.sid = v != null ? sidIndex[v] : null;
+            else obj[USAGE_KEY_MAP[k] || k] = v;
+          }
+          return obj;
+        });
+      }
+      minUsage._sidList = sidList;
+      copy.usage = minUsage;
     }
-    return result;
+    result[scope] = copy;
   }
-  const inlineData = { ...data, scopeData: minifyUsageData(data.scopeData), _minified: true };
-  const inlineJson = JSON.stringify(inlineData);
+  return result;
+}
 
-  // 5b) Load locales
+const escapeForScript = (str) => str
+  .replaceAll('</', String.raw`<\u002f`)
+  .replaceAll('\u2028', String.raw`\u2028`)
+  .replaceAll('\u2029', String.raw`\u2029`);
+
+/**
+ * Write data.js (minified data for browser) + data.json (full data for programmatic access).
+ * This is the lightweight operation — no template processing, no esbuild.
+ */
+function writeDataJs(data, dataPath) {
+  // data.json — full data for programmatic access
+  fs.writeFileSync(dataPath, JSON.stringify(data), 'utf-8');
+
+  // data.js — minified data for browser (<script src="data.js">)
+  const inlineData = { ...data, scopeData: minifyUsageData(data.scopeData), _minified: true };
+  const dataJsPath = path.join(path.dirname(dataPath), 'data.js');
+  fs.writeFileSync(dataJsPath, 'let DATA = ' + escapeForScript(JSON.stringify(inlineData)) + ';', 'utf-8');
+}
+
+/**
+ * Write index.html (the dashboard shell — CSS, JS, locales, billboard.js).
+ * Only needed on version change or first build. Data is loaded via <script src="data.js">.
+ */
+function writeHtml(indexPath, systemLocale) {
   const LOCALES_DIR = path.join(TEMPLATES, 'locales');
   const enObj = JSON.parse(fs.readFileSync(path.join(LOCALES_DIR, 'en.json'), 'utf-8'));
   let localeObj = {};
@@ -255,21 +533,18 @@ async function main() {
       console.log(`  locale: ${systemLocale} (${Object.keys(localeObj).length - 1} keys)`);
     } catch { /* fallback to English */ }
   }
-  // For unknown locales: copy en.json as template on first run
   if (systemLocale !== 'en' && !fs.existsSync(localePath)) {
     fs.mkdirSync(LOCALES_DIR, { recursive: true });
     fs.writeFileSync(localePath, JSON.stringify(enObj, null, 2), 'utf-8');
     console.log(`  locale: created template ${localePath} (translate and rebuild)`);
   }
 
-  // 5c) index.html — always regenerated (data is inlined for file:// compatibility)
   const template = fs.readFileSync(path.join(TEMPLATES, 'dashboard.html'), 'utf-8');
   const rawStyles = fs.readFileSync(path.join(TEMPLATES, 'styles.css'), 'utf-8');
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf-8'));
   const rawAppJs = fs.readFileSync(path.join(TEMPLATES, 'app.js'), 'utf-8')
     .replace(/__VERSION__/g, JSON.stringify(pkg.version));
 
-  // billboard.js (pkgd includes d3) + CSS
   const bbDir = path.join(ROOT, 'node_modules', 'billboard.js', 'dist');
   if (!fs.existsSync(bbDir)) {
     console.error('oh-my-hi: ❌ node_modules not found. Run `npm install` in', ROOT);
@@ -282,25 +557,14 @@ async function main() {
   const styles = transformSync(rawStyles, { loader: 'css', minify: true }).code;
   const appJs = transformSync(rawAppJs, { loader: 'js', minify: true }).code;
 
-  const escapeForScript = (str) => str
-    .replaceAll('</', String.raw`<\u002f`)
-    .replaceAll('\u2028', String.raw`\u2028`)
-    .replaceAll('\u2029', String.raw`\u2029`);
-
-  const escapedJson = escapeForScript(inlineJson);
-  const escapedLocale = escapeForScript(JSON.stringify(localeObj));
-
-  // Use a single-pass replacer to avoid cross-contamination when data payloads
-  // contain placeholder-like strings (e.g. __LOCALE_DATA__ inside skill descriptions).
   const placeholders = {
     __BB_CSS__: bbCss,
     __BB_DARK_CSS_STR__: JSON.stringify(bbDarkCss),
     __BB_JS__: bbJs,
     __STYLES__: styles,
     __EN_DATA__: escapeForScript(JSON.stringify(enObj)),
-    __LOCALE_DATA__: escapedLocale,
+    __LOCALE_DATA__: escapeForScript(JSON.stringify(localeObj)),
     __APP_JS__: appJs,
-    __DATA__: escapedJson,
     __VERSION__: pkg.version,
   };
   const placeholderRe = new RegExp(Object.keys(placeholders).map(k => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'), 'g');
@@ -308,22 +572,24 @@ async function main() {
 
   fs.writeFileSync(indexPath, html, 'utf-8');
   console.log(`oh-my-hi: index.html generated → ${indexPath}`);
+}
 
-  console.log(`oh-my-hi: done`);
+/**
+ * Check if index.html needs rebuild (missing or version mismatch).
+ */
+function needsHtmlRebuild(indexPath) {
+  if (!fs.existsSync(indexPath)) return true;
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf-8'));
+    const html = fs.readFileSync(indexPath, 'utf-8');
+    return !html.includes(pkg.version);
+  } catch { return true; }
+}
 
-  // Auto-refresh status notice (on first run or full build)
-  if (!dataOnly) {
-    const settings = readSettings();
-    if (!hasAutoHook(settings)) {
-      console.log('');
-      console.log('oh-my-hi: ⚠️ Auto data refresh is not configured.');
-      console.log('  → Enable auto-refresh on session end: /omh --enable-auto');
-      console.log('  → Manual refresh:                     /omh --data-only');
-    }
-  }
-
-  // Open/refresh browser (skip for --data-only, --status and --disable-auto)
-  if (!dataOnly) openOrRefreshBrowser(indexPath);
+/** Legacy wrapper — writes both data.js and index.html */
+function writeDashboard(data, dataPath, indexPath, systemLocale) {
+  writeDataJs(data, dataPath);
+  writeHtml(indexPath, systemLocale);
 }
 
 /** Open browser tab or refresh if already open */
@@ -414,7 +680,7 @@ function openOrRefreshBrowser(filePath) {
 }
 
 /** Collect global scope data (sync parsers + async usage in parallel) */
-async function collectScopeData(configDir) {
+async function collectScopeData(configDir, { days = 0, cache, cachePath } = {}) {
   // Run sync parsers immediately (fast, small files)
   const syncData = {
     configFiles: parseConfigFiles(configDir),
@@ -433,14 +699,14 @@ async function collectScopeData(configDir) {
   };
 
   // Async usage parser runs concurrently with sync parsers' setup
-  const usage = await parseUsage(configDir, 0);
+  const usage = await parseUsage(configDir, days, null, { cache, cachePath });
 
   return { ...syncData, usage };
 }
 
 /** Collect project scope data */
-async function collectProjectData(configPath, projectPath) {
-  const emptyUsage = { commands: [], skills: [], agents: [], mcpCalls: [], tokenEntries: [], promptStats: [], latencyEntries: [], dailyActivity: [] };
+async function collectProjectData(configPath, projectPath, { days = 0, cache, cachePath } = {}) {
+  const emptyUsage = emptyScopeData().usage;
 
   // Sync parsers (fast)
   const syncData = {
@@ -461,7 +727,7 @@ async function collectProjectData(configPath, projectPath) {
 
   // Async usage parser
   let usage;
-  try { usage = await parseUsage(CLAUDE_CONFIG_DIR, 0, configPath); } catch { usage = emptyUsage; }
+  try { usage = await parseUsage(CLAUDE_CONFIG_DIR, days, configPath, { cache, cachePath }); } catch { usage = emptyUsage; }
 
   return { ...syncData, usage };
 }
@@ -544,7 +810,7 @@ function emptyScopeData() {
     configFiles: [], skills: [], agents: [], plugins: [], hooks: [],
     memory: [], mcpServers: [], rules: [], principles: [],
     commands: [], teams: [], plans: [], todos: [],
-    usage: { commands: [], skills: [], agents: [], dailyActivity: [] },
+    usage: { commands: [], skills: [], agents: [], mcpCalls: [], tokenEntries: [], promptStats: [], latencyEntries: [], dailyActivity: [] },
   };
 }
 
@@ -553,4 +819,6 @@ function safeCall(fn) {
   try { return fn(); } catch { return []; }
 }
 
-main().catch(err => { console.error(err); process.exit(1); });
+if (!args.includes('--update')) {
+  main().catch(err => { console.error(err); process.exit(1); });
+}
