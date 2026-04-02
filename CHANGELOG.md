@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.4.0] - 2026-04-02
+
+### Added
+- **Incremental cache**: Transcript parse results cached as gzipped append-only segments. Only changed files are re-parsed on subsequent runs
+- **Progressive loading**: Cold start shows 7-day preview immediately, then loads full data in background with partial banner notification
+- **Lightweight mode** (`--data-only`): Uses mtime-index for change detection without loading full cache. Writes plain JSON pending files merged on next `/omh` run
+- **Data/shell separation**: `data.js` (data) separated from `index.html` (shell). Shell rebuilt only on version change, data updated independently
+- **Update check**: `/omh --update` to check and install latest version. Auto-check runs once per day on `/omh` with 24h cache
+- **Migration detection**: Auto-rebuilds on version upgrade with informational message
+- **Cache minification**: Key shortening + string interning (model, context, sessionId) reduces cache size ~80%
+- **Mtime-index**: Lightweight change detection file with relative paths and common prefix compression
+
+### Changed
+- `--data-only` now runs in lightweight mode (no full cache load, no dashboard rebuild)
+- Stop hook collects data only (~0.15s), dashboard updates via `data.js`
+- Help page: removed install section (redundant for installed users), update via `--update` parameter
+- `findSkillFiles` excludes `node_modules`, `.git`, `temp_git_*`, `temp_local_*` directories
+
+### Fixed
+- `findSkillFiles` hanging when plugin cache contains `node_modules` directories
+
 ## [0.3.0] - 2026-04-01
 
 ### Added
