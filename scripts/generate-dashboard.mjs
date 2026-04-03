@@ -64,43 +64,82 @@ async function runUpdate() {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf-8'));
   console.log(`oh-my-hi: current version v${pkg.version}`);
   console.log('oh-my-hi: checking for updates...');
+
+  // Detect marketplace name and cache dir
+  const pluginCacheDir = path.join(CLAUDE_CONFIG_DIR, 'plugins', 'cache');
+  let marketplace = 'oh-my-hi';
+  if (fs.existsSync(pluginCacheDir)) {
+    for (const entry of fs.readdirSync(pluginCacheDir, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name.startsWith('temp_')) continue;
+      if (fs.existsSync(path.join(pluginCacheDir, entry.name, pkg.name))) {
+        marketplace = entry.name;
+        break;
+      }
+    }
+  }
+
+  // Refresh marketplace cache so claude plugin update sees latest tags
+  const marketplaceCacheDir = path.join(CLAUDE_CONFIG_DIR, 'plugins', 'marketplaces', marketplace);
+  if (fs.existsSync(marketplaceCacheDir)) {
+    try {
+      execSync('git fetch --tags --quiet', { cwd: marketplaceCacheDir, stdio: 'pipe', timeout: 10000 });
+    } catch { /* best effort — offline or not a git repo */ }
+  }
+
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
-    const res = await fetch(`https://registry.npmjs.org/${pkg.name}/latest`, {
-      signal: controller.signal, headers: { 'Accept': 'application/json' },
-    });
-    clearTimeout(timeout);
-    if (!res.ok) throw new Error('registry request failed');
-    const data = await res.json();
+    // Check latest version via GitHub tags API (git-based distribution)
+    const repoUrl = pkg.repository?.url || '';
+    const ghMatch = repoUrl.match(/github\.com[/:]([^/]+\/[^/.]+)/);
+    let latest = null;
+
+    if (ghMatch) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
+      const res = await fetch(`https://api.github.com/repos/${ghMatch[1]}/tags`, {
+        signal: controller.signal, headers: { 'Accept': 'application/vnd.github+json' },
+      });
+      clearTimeout(timeout);
+      if (res.ok) {
+        const tags = await res.json();
+        // Find highest semver tag
+        for (const tag of tags) {
+          const v = tag.name.replace(/^v/, '');
+          if (/^\d+\.\d+\.\d+$/.test(v) && (!latest || semverGt(v, latest))) latest = v;
+        }
+      }
+    }
+
+    // Fallback to npm registry if GitHub API unavailable
+    if (!latest) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
+      const res = await fetch(`https://registry.npmjs.org/${pkg.name}/latest`, {
+        signal: controller.signal, headers: { 'Accept': 'application/json' },
+      });
+      clearTimeout(timeout);
+      if (res.ok) {
+        const data = await res.json();
+        latest = data.version;
+      }
+    }
+
+    if (!latest) throw new Error('could not determine latest version');
 
     // Cache check result
     const UPDATE_CHECK_FILE = path.join(OUTPUT, 'cache', '.update-check');
     try {
       fs.mkdirSync(path.dirname(UPDATE_CHECK_FILE), { recursive: true });
-      fs.writeFileSync(UPDATE_CHECK_FILE, JSON.stringify({ timestamp: Date.now(), current: pkg.version, latest: data.version }), 'utf8');
+      fs.writeFileSync(UPDATE_CHECK_FILE, JSON.stringify({ timestamp: Date.now(), current: pkg.version, latest }), 'utf8');
     } catch { /* best effort */ }
 
-    if (data.version === pkg.version || semverGt(pkg.version, data.version)) {
+    if (!semverGt(latest, pkg.version)) {
       console.log('oh-my-hi: ✅ already up to date');
       return;
     }
-    console.log(`oh-my-hi: v${data.version} available`);
-    // Detect marketplace name from plugin cache path
-    const pluginCacheDir = path.join(CLAUDE_CONFIG_DIR, 'plugins', 'cache');
-    let marketplace = 'oh-my-hi';
-    if (fs.existsSync(pluginCacheDir)) {
-      for (const entry of fs.readdirSync(pluginCacheDir, { withFileTypes: true })) {
-        if (!entry.isDirectory() || entry.name.startsWith('temp_')) continue;
-        if (fs.existsSync(path.join(pluginCacheDir, entry.name, pkg.name))) {
-          marketplace = entry.name;
-          break;
-        }
-      }
-    }
-    console.log(`oh-my-hi: updating v${pkg.version} → v${data.version}...`);
+    console.log(`oh-my-hi: v${latest} available`);
+    console.log(`oh-my-hi: updating v${pkg.version} → v${latest}...`);
     execSync(`claude plugin update ${pkg.name}@${marketplace}`, { stdio: 'inherit' });
-    console.log(`oh-my-hi: ✅ updated to v${data.version}`);
+    console.log(`oh-my-hi: ✅ updated to v${latest}`);
   } catch (e) {
     if (e.name === 'AbortError') console.log('oh-my-hi: ❌ network timeout');
     else console.log('oh-my-hi: ❌ update failed —', e.message);
@@ -337,7 +376,7 @@ async function main() {
   await checkForUpdate();
 }
 
-/** Check npm registry for newer version (non-blocking, cached for 24h) */
+/** Check GitHub tags for newer version (non-blocking, cached for 24h) */
 async function checkForUpdate() {
   const UPDATE_CHECK_FILE = path.join(OUTPUT, 'cache', '.update-check');
   try {
@@ -355,25 +394,48 @@ async function checkForUpdate() {
 
     const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf-8'));
     const current = pkg.version;
+    let latest = null;
 
-    // Fetch latest version from npm (with 3s timeout)
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3000);
-    const res = await fetch(`https://registry.npmjs.org/${pkg.name}/latest`, {
-      signal: controller.signal,
-      headers: { 'Accept': 'application/json' },
-    });
-    clearTimeout(timeout);
+    // Check GitHub tags first (primary distribution channel)
+    const repoUrl = pkg.repository?.url || '';
+    const ghMatch = repoUrl.match(/github\.com[/:]([^/]+\/[^/.]+)/);
+    if (ghMatch) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 3000);
+      const res = await fetch(`https://api.github.com/repos/${ghMatch[1]}/tags`, {
+        signal: controller.signal, headers: { 'Accept': 'application/vnd.github+json' },
+      });
+      clearTimeout(timeout);
+      if (res.ok) {
+        const tags = await res.json();
+        for (const tag of tags) {
+          const v = tag.name.replace(/^v/, '');
+          if (/^\d+\.\d+\.\d+$/.test(v) && (!latest || semverGt(v, latest))) latest = v;
+        }
+      }
+    }
 
-    if (!res.ok) return;
-    const data = await res.json();
-    const latest = data.version;
+    // Fallback to npm registry
+    if (!latest) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 3000);
+      const res = await fetch(`https://registry.npmjs.org/${pkg.name}/latest`, {
+        signal: controller.signal, headers: { 'Accept': 'application/json' },
+      });
+      clearTimeout(timeout);
+      if (res.ok) {
+        const data = await res.json();
+        latest = data.version;
+      }
+    }
+
+    if (!latest) return;
 
     // Cache the result
     fs.mkdirSync(path.dirname(UPDATE_CHECK_FILE), { recursive: true });
     fs.writeFileSync(UPDATE_CHECK_FILE, JSON.stringify({ timestamp: Date.now(), current, latest }), 'utf8');
 
-    if (latest && semverGt(latest, current)) {
+    if (semverGt(latest, current)) {
       console.log(`\noh-my-hi: ✨ v${latest} available (current: v${current})`);
       console.log('  → Update: /omh --update');
     }

@@ -6,10 +6,12 @@
 - Progress output improved: step-numbered messages (`[1/3]`, `[1/4]`) replace generic lines; first-run vs normal-run messaging differentiated
 - In-place progress bar (`█░` style) rendered during file collection
 - `collectAllScopes` accepts `progress` flag to enable/disable bar rendering
+- Update check now queries **GitHub tags** first (primary distribution channel), with npm registry as fallback
 
 ### Fixed
 - Progress bar newline flushed after collection completes (no broken terminal output)
 - Update check now compares versions numerically; pre-publish local versions no longer trigger spurious "downgrade" attempts
+- `--update` now runs `git fetch --tags` on the marketplace cache before calling `claude plugin update`, so stale local caches no longer report "already at latest" when a newer version exists on GitHub
 
 ## [0.4.0] - 2026-04-02
 
