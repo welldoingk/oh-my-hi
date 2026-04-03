@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.4.1] - 2026-04-03
+
+### Changed
+- Progress output improved: step-numbered messages (`[1/3]`, `[1/4]`) replace generic lines; first-run vs normal-run messaging differentiated
+- In-place progress bar (`█░` style) rendered during file collection
+- `collectAllScopes` accepts `progress` flag to enable/disable bar rendering
+
+### Fixed
+- Progress bar newline flushed after collection completes (no broken terminal output)
+- Update check now compares versions numerically; pre-publish local versions no longer trigger spurious "downgrade" attempts
+
 ## [0.4.0] - 2026-04-02
 
 ### Added

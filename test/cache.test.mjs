@@ -323,6 +323,97 @@ describe('Progressive Loading', () => {
   });
 });
 
+// ── Progress Tracking ──
+
+describe('Progress Tracking', () => {
+  it('_onProgress is called for every file (cache hit and miss)', async () => {
+    const tmpDir = fs.mkdtempSync('/tmp/omh-progress-');
+    try {
+      // Write two minimal JSONL transcript files
+      fs.writeFileSync(path.join(tmpDir, 'a.jsonl'), '');
+      fs.writeFileSync(path.join(tmpDir, 'b.jsonl'), '');
+
+      const cache = {};
+      let callCount = 0;
+      cache._onProgress = () => { callCount++; };
+
+      await parseUsage(CLAUDE_CONFIG_DIR, 0, tmpDir, { cache });
+      assert.ok(callCount >= 2, `_onProgress should be called at least once per file, got ${callCount}`);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+  it('_processed equals number of files processed', async () => {
+    const tmpDir = fs.mkdtempSync('/tmp/omh-progress-');
+    try {
+      fs.writeFileSync(path.join(tmpDir, 'a.jsonl'), '');
+      fs.writeFileSync(path.join(tmpDir, 'b.jsonl'), '');
+      fs.writeFileSync(path.join(tmpDir, 'c.jsonl'), '');
+
+      const cache = {};
+      cache._onProgress = () => {};
+      await parseUsage(CLAUDE_CONFIG_DIR, 0, tmpDir, { cache });
+
+      assert.equal(cache._processed, 3, '_processed should equal file count');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+  it('_total is set before files are processed', async () => {
+    const tmpDir = fs.mkdtempSync('/tmp/omh-progress-');
+    try {
+      fs.writeFileSync(path.join(tmpDir, 'a.jsonl'), '');
+      fs.writeFileSync(path.join(tmpDir, 'b.jsonl'), '');
+
+      const cache = {};
+      let totalAtFirstCall = null;
+      cache._onProgress = () => {
+        if (totalAtFirstCall === null) totalAtFirstCall = cache._total;
+      };
+
+      await parseUsage(CLAUDE_CONFIG_DIR, 0, tmpDir, { cache });
+      assert.ok(totalAtFirstCall >= 2, `_total should be set before first _onProgress, got ${totalAtFirstCall}`);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+  it('_processed increments for cache hits too', async () => {
+    const tmpDir = fs.mkdtempSync('/tmp/omh-progress-');
+    try {
+      fs.writeFileSync(path.join(tmpDir, 'a.jsonl'), '');
+
+      // First run — cache miss
+      const cache = {};
+      cache._onProgress = () => {};
+      await parseUsage(CLAUDE_CONFIG_DIR, 0, tmpDir, { cache });
+      const parsedFirst = cache._parsed;
+
+      // Second run — cache hit
+      cache._processed = 0;
+      cache._parsed = 0;
+      cache._onProgress = () => {};
+      await parseUsage(CLAUDE_CONFIG_DIR, 0, tmpDir, { cache });
+
+      assert.equal(cache._processed, 1, '_processed should increment even on cache hit');
+      assert.equal(cache._parsed, 0, '_parsed should not increment on cache hit');
+      assert.equal(parsedFirst, 1, 'first run should have parsed the file');
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true });
+    }
+  });
+
+  it('normal mode output contains progress bar characters', () => {
+    // Progress bar is only shown in full (non --data-only) mode
+    // Use captured stdout which includes \r-separated progress updates
+    const output = run();
+    const hasProgressBar = output.includes('[') && output.includes('%') && output.includes('files)');
+    assert.ok(hasProgressBar, 'output should contain progress bar ([ ... % ... files))');
+  });
+});
+
 // ── findSkillFiles Exclusions ──
 
 describe('findSkillFiles exclusions', () => {

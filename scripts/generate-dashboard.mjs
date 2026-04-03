@@ -81,7 +81,7 @@ async function runUpdate() {
       fs.writeFileSync(UPDATE_CHECK_FILE, JSON.stringify({ timestamp: Date.now(), current: pkg.version, latest: data.version }), 'utf8');
     } catch { /* best effort */ }
 
-    if (data.version === pkg.version) {
+    if (data.version === pkg.version || semverGt(pkg.version, data.version)) {
       console.log('oh-my-hi: ✅ already up to date');
       return;
     }
@@ -111,6 +111,17 @@ async function runUpdate() {
 // ── Auto-refresh hook management ──
 const SETTINGS_PATH = path.join(CLAUDE_CONFIG_DIR, 'settings.json');
 const AUTO_HOOK_CMD = `node "${path.join(ROOT, 'scripts', 'generate-dashboard.mjs')}" --data-only`;
+
+/** Returns true if version a is greater than version b (semver, numeric comparison) */
+function semverGt(a, b) {
+  const pa = a.split('.').map(Number);
+  const pb = b.split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] || 0) > (pb[i] || 0)) return true;
+    if ((pa[i] || 0) < (pb[i] || 0)) return false;
+  }
+  return false;
+}
 
 function readSettings() {
   if (!fs.existsSync(SETTINGS_PATH)) return {};
@@ -267,11 +278,7 @@ async function main() {
   }
 
   // ── Full mode (user-initiated /omh) ──
-  console.log('oh-my-hi: collecting data...');
-
   const scopes = detectScopes(CLAUDE_CONFIG_DIR, extraPaths);
-  console.log(`  scopes: ${scopes.length} detected`);
-
   const systemLocale = detectSystemLocale();
 
   // Check cache state to decide progressive mode
@@ -285,30 +292,37 @@ async function main() {
   }
 
   if (!cacheExists && !pendingExists) {
-    // Progressive mode: no cache at all
-    console.log('oh-my-hi: progressive mode — quick preview first...');
+    // Progressive mode: no cache at all (first run)
+    console.log('oh-my-hi: first run — generating dashboard from scratch...');
+    console.log(`  [1/4] scanning ${scopes.length} workspace(s)...`);
 
     const cache = {};
-    const phase1ScopeData = await collectAllScopes(scopes, { days: 7, cache });
+    console.log('  [2/4] building 7-day preview...');
+    const phase1ScopeData = await collectAllScopes(scopes, { days: 7, cache, progress: true });
     const phase1Data = buildDataObject(scopes, phase1ScopeData, systemLocale, { _partial: true });
     writeDataJs(phase1Data, dataPath);
-    openOrRefreshBrowser(indexPath);
-    console.log('oh-my-hi: preview ready — loading full data in background...');
 
-    const phase2ScopeData = await collectAllScopes(scopes, { days: 0, cache, cachePath: CACHE_PATH });
+    console.log('  [3/4] opening browser with preview...');
+    openOrRefreshBrowser(indexPath);
+
+    console.log('  [4/4] loading full history (this may take a moment)...');
+    const phase2ScopeData = await collectAllScopes(scopes, { days: 0, cache, cachePath: CACHE_PATH, progress: true });
     const phase2Data = buildDataObject(scopes, phase2ScopeData, systemLocale);
     writeDataJs(phase2Data, dataPath);
     openOrRefreshBrowser(indexPath);
-    console.log('oh-my-hi: full data loaded — browser refreshed');
   } else {
     // Normal mode: load cache + merge pending + full data
-    const scopeData = await collectAllScopes(scopes, { days: 0, cachePath: CACHE_PATH });
+    console.log('oh-my-hi: collecting data...');
+    console.log(`  [1/3] scanning ${scopes.length} workspace(s)...`);
+    const scopeData = await collectAllScopes(scopes, { days: 0, cachePath: CACHE_PATH, progress: true });
+    console.log('  [2/3] building dashboard...');
     const data = buildDataObject(scopes, scopeData, systemLocale);
     writeDataJs(data, dataPath);
+    console.log('  [3/3] opening browser...');
     openOrRefreshBrowser(indexPath);
   }
 
-  console.log('oh-my-hi: done');
+  console.log('oh-my-hi: ✅ done');
 
   // Auto-refresh status notice
   const settings = readSettings();
@@ -331,7 +345,7 @@ async function checkForUpdate() {
     if (fs.existsSync(UPDATE_CHECK_FILE)) {
       const lastCheck = JSON.parse(fs.readFileSync(UPDATE_CHECK_FILE, 'utf8'));
       if (Date.now() - lastCheck.timestamp < 24 * 60 * 60 * 1000) {
-        if (lastCheck.latest && lastCheck.latest !== lastCheck.current) {
+        if (lastCheck.latest && semverGt(lastCheck.latest, lastCheck.current)) {
           console.log(`\noh-my-hi: ✨ v${lastCheck.latest} available (current: v${lastCheck.current})`);
           console.log('  → Update: /omh --update');
         }
@@ -359,7 +373,7 @@ async function checkForUpdate() {
     fs.mkdirSync(path.dirname(UPDATE_CHECK_FILE), { recursive: true });
     fs.writeFileSync(UPDATE_CHECK_FILE, JSON.stringify({ timestamp: Date.now(), current, latest }), 'utf8');
 
-    if (latest && latest !== current) {
+    if (latest && semverGt(latest, current)) {
       console.log(`\noh-my-hi: ✨ v${latest} available (current: v${current})`);
       console.log('  → Update: /omh --update');
     }
@@ -385,8 +399,18 @@ function detectSystemLocale() {
   return systemLocale;
 }
 
+/** Render an in-place progress bar to stdout */
+function renderProgressBar(processed, total) {
+  if (!total) return;
+  const pct = Math.round((processed / total) * 100);
+  const width = 25;
+  const filled = Math.round((processed / total) * width);
+  const bar = '█'.repeat(filled) + '░'.repeat(width - filled);
+  process.stdout.write(`\r  [${bar}] ${pct}% (${processed}/${total} files)`);
+}
+
 /** Collect all scopes (global + projects) with given options */
-async function collectAllScopes(scopes, { days = 0, cache, cachePath } = {}) {
+async function collectAllScopes(scopes, { days = 0, cache, cachePath, progress = false } = {}) {
   const projectScopes = scopes.filter(s => s.type !== 'global');
   // Load or reuse cache; reset parse counter for this collection round
   const sharedCache = cache || (cachePath ? loadTranscriptCache(cachePath) : {});
@@ -398,6 +422,12 @@ async function collectAllScopes(scopes, { days = 0, cache, cachePath } = {}) {
   }
 
   sharedCache._parsed = 0;
+  sharedCache._processed = 0;
+  sharedCache._total = 0;
+  sharedCache._onProgress = progress
+    ? () => renderProgressBar(sharedCache._processed, sharedCache._total)
+    : undefined;
+
   const usageOpts = { days, cache: sharedCache, cachePath };
 
   const [globalData, ...projectResults] = await Promise.all([
@@ -415,6 +445,8 @@ async function collectAllScopes(scopes, { days = 0, cache, cachePath } = {}) {
   if (cachePath) saveTranscriptCache(cachePath, sharedCache);
   // Update mtime index for lightweight mode
   if (cachePath) saveMtimeIndex(cachePath, sharedCache);
+
+  if (progress) process.stdout.write('\n');
 
   const totalFiles = Object.keys(sharedCache).filter(k => !k.startsWith('_')).length;
   const parsed = Math.min(sharedCache._parsed || 0, totalFiles);
@@ -441,7 +473,9 @@ function buildDataObject(scopes, scopeData, systemLocale, extra = {}) {
     }
   }
   const taskCategories = buildTaskCategories(cleanScopeData);
-  const isDevBuild = fs.existsSync(path.join(ROOT, '.git'));
+  // 스크립트가 ~/.claude 하위(플러그인)에서 실행되면 배포본, 그 외는 dev
+  const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+  const isDevBuild = !scriptDir.startsWith(CLAUDE_CONFIG_DIR);
   return {
     scopes,
     scopeData: cleanScopeData,

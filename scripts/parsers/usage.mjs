@@ -405,19 +405,24 @@ export function saveMtimeIndex(cachePath, cache) {
  * Always parses without cutoff (full data) so cache is reusable across time ranges.
  */
 async function cachedParseTranscriptFile(fp, cache) {
-  let stat;
-  try { stat = fs.statSync(fp); } catch { return null; }
-  const cached = cache[fp];
-  if (cached && cached.mtimeMs === stat.mtimeMs) {
-    // Full cache hit (has result) or mtime-only stub (skip — already processed)
-    if (cached.size === stat.size) return cached.result;
-    // Mtime match but size=0 means mtime-only stub from lightweight mode — skip
-    if (cached.size === 0) return null;
+  try {
+    let stat;
+    try { stat = fs.statSync(fp); } catch { return null; }
+    const cached = cache[fp];
+    if (cached && cached.mtimeMs === stat.mtimeMs) {
+      // Full cache hit (has result) or mtime-only stub (skip — already processed)
+      if (cached.size === stat.size) return cached.result;
+      // Mtime match but size=0 means mtime-only stub from lightweight mode — skip
+      if (cached.size === 0) return null;
+    }
+    const result = await parseTranscriptFile(fp, 0);
+    cache[fp] = { mtimeMs: stat.mtimeMs, size: stat.size, result, _new: true };
+    cache._parsed = (cache._parsed || 0) + 1;
+    return result;
+  } finally {
+    cache._processed = (cache._processed || 0) + 1;
+    cache._onProgress?.();
   }
-  const result = await parseTranscriptFile(fp, 0);
-  cache[fp] = { mtimeMs: stat.mtimeMs, size: stat.size, result, _new: true };
-  cache._parsed = (cache._parsed || 0) + 1;
-  return result;
 }
 
 /**
@@ -671,6 +676,7 @@ async function parseTranscripts(configDir, cutoffMs, cache = {}) {
   }
 
   // Phase 2: Parse all files in parallel (with cache)
+  cache._total = (cache._total || 0) + filePaths.length;
   const results = await parallelMap(filePaths, fp => cachedParseTranscriptFile(fp, cache));
 
   return applyCutoff(mergeTranscriptResults(results.filter(Boolean)), cutoffMs);
@@ -784,6 +790,7 @@ async function parseProjectTranscripts(projDirPath, cutoffMs, cache = {}) {
   }
 
   // Phase 2: Parse all files in parallel (with cache)
+  cache._total = (cache._total || 0) + filePaths.length;
   const results = await parallelMap(filePaths, fp => cachedParseTranscriptFile(fp, cache));
 
   return applyCutoff(mergeTranscriptResults(results.filter(Boolean)), cutoffMs);
