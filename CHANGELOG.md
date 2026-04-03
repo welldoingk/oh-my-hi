@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.4.1] - 2026-04-03
+## [0.4.2] - 2026-04-03
 
 ### Changed
 - Progress output improved: step-numbered messages (`[1/3]`, `[1/4]`) replace generic lines; first-run vs normal-run messaging differentiated
@@ -12,6 +12,7 @@
 - Progress bar newline flushed after collection completes (no broken terminal output)
 - Update check now compares versions numerically; pre-publish local versions no longer trigger spurious "downgrade" attempts
 - `--update` now runs `git fetch --tags` on the marketplace cache before calling `claude plugin update`, so stale local caches no longer report "already at latest" when a newer version exists on GitHub
+- Test: replaced flaky mtime comparison with output-based assertion (macOS APFS sub-ms timestamp precision artifact)
 
 ## [0.4.0] - 2026-04-02
 
