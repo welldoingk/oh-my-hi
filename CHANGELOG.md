@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.4.5] - 2026-04-04
+
+### Fixed
+- SKILL.md: `find` now picks the highest semver version from cache (`sort -V | tail -1`) instead of the first filesystem match, preventing older cached versions from being used after an update
+
 ## [0.4.4] - 2026-04-04
 
 ### Fixed

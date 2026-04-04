@@ -42,10 +42,17 @@ If the user chooses **enable**, run `--enable-auto`. If they choose **disable**,
 - **Auto-refresh**: `--enable-auto` registers a Stop hook — rebuilds on every session end
 - **Browser reuse**: macOS AppleScript tab detection; Windows/Linux fallback to system open
 
-Find and run the script (searches plugin cache first, then marketplaces):
+Find and run the script (picks the latest version from cache, falls back to marketplaces):
 
 ```bash
-SCRIPT=$(find "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins" -name "generate-dashboard.mjs" -path "*/scripts/generate-dashboard.mjs" -print -quit 2>/dev/null)
+PLUGINS_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins"
+# Pick the highest semver version from cache (sort -V handles semantic versioning)
+SCRIPT=$(find "$PLUGINS_DIR/cache" -name "generate-dashboard.mjs" -path "*/scripts/generate-dashboard.mjs" 2>/dev/null \
+  | sort -V | tail -1)
+# Fallback to marketplaces directory
+if [ -z "$SCRIPT" ]; then
+  SCRIPT=$(find "$PLUGINS_DIR/marketplaces" -name "generate-dashboard.mjs" -path "*/scripts/generate-dashboard.mjs" -print -quit 2>/dev/null)
+fi
 if [ -z "$SCRIPT" ]; then
   echo "oh-my-hi: ERROR — generate-dashboard.mjs not found. Try: /omh --update"
   exit 1
