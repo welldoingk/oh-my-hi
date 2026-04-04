@@ -346,7 +346,7 @@ async function main() {
 
     console.log('  [4/4] loading full history (this may take a moment)...');
     const phase2ScopeData = await collectAllScopes(scopes, { days: 0, cache, cachePath: CACHE_PATH, progress: true });
-    const phase2Data = buildDataObject(scopes, phase2ScopeData, systemLocale);
+    const phase2Data = buildDataObject(scopes, phase2ScopeData, systemLocale, { _firstRun: true, _dateRange: computeDateRange(phase2ScopeData) });
     writeDataJs(phase2Data, dataPath);
     openOrRefreshBrowser(indexPath);
   } else {
@@ -523,6 +523,20 @@ async function collectAllScopes(scopes, { days = 0, cache, cachePath, progress =
 }
 
 /** Build data object from scope data (strips internal _cacheStats) */
+/** Compute min/max date range from all tokenEntries across all scopes */
+function computeDateRange(scopeData) {
+  let minTs = null, maxTs = null;
+  for (const sdata of Object.values(scopeData)) {
+    for (const entry of (sdata?.usage?.tokenEntries || [])) {
+      const ts = entry.timestamp;
+      if (!ts) continue;
+      if (!minTs || ts < minTs) minTs = ts;
+      if (!maxTs || ts > maxTs) maxTs = ts;
+    }
+  }
+  return minTs && maxTs ? { from: minTs, to: maxTs } : null;
+}
+
 function buildDataObject(scopes, scopeData, systemLocale, extra = {}) {
   // Strip _cacheStats from usage data before building output
   const cleanScopeData = {};

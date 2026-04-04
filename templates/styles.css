@@ -1829,7 +1829,8 @@ body.dark .bb-tooltip .value {
 
 /* ── Top Banners (shared base) ── */
 .update-banner,
-.partial-banner {
+.partial-banner,
+.firstrun-banner {
   position: fixed;
   top: 0;
   left: var(--sidebar-width);
@@ -2053,6 +2054,31 @@ body.dark .bb-tooltip .value {
 .partial-banner {
   gap: 10px;
   background: #e67700;
+}
+
+.firstrun-banner {
+  gap: 12px;
+  background: #2f9e44;
+}
+
+.firstrun-banner span {
+  flex: 1;
+}
+
+.firstrun-close {
+  background: rgba(255,255,255,0.2);
+  border: 1px solid rgba(255,255,255,0.3);
+  color: #fff;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1.5;
+  flex-shrink: 0;
+}
+
+.firstrun-close:hover {
+  background: rgba(255,255,255,0.35);
 }
 
 .partial-spinner {

@@ -339,6 +339,8 @@
   "updateBannerMsg": "⚡ New data detected. Refresh the page to see the latest data.",
   "updateBannerRefresh": "Refresh",
   "partialBannerMsg": "Showing last 7 days. Full data is loading in the background\u2026",
+  "firstRunBannerMsg": "✅ Full data loaded",
+  "close": "Close",
   "catDescSkills": "Skills are reusable prompt templates invoked via /commands. Provided from the skills/ directory or plugins, each SKILL.md defines name, description, and argument hints in its frontmatter. They can also be auto-invoked via the Skill tool during conversations.",
   "catDescAgents": "Agents are subprocesses that autonomously handle complex tasks. Defined as markdown in the agents/ directory, they specify model (haiku/sonnet/opus), available tools, and domain expertise. Dispatched via the Agent tool, they run in independent contexts.",
   "catDescRules": "Rules are instruction files that control Claude's behavior. Stored as markdown files in {{configDir}}/rules/, they are automatically loaded into context in every session. Unlike CLAUDE.md, they allow separation of concerns into individual files.",

@@ -42,14 +42,8 @@ If the user chooses **enable**, run `--enable-auto`. If they choose **disable**,
 - **Auto-refresh**: `--enable-auto` registers a Stop hook — rebuilds on every session end
 - **Browser reuse**: macOS AppleScript tab detection; Windows/Linux fallback to system open
 
-Find the oh-my-hi plugin installation path and run the script:
+Find and run the script (searches plugin cache first, then marketplaces):
 
 ```bash
-OMH_ROOT=$(dirname "$(find "${CLAUDE_CONFIG_DIR:-$HOME/.claude}" -path "*/oh-my-hi/*/scripts/generate-dashboard.mjs" -print -quit 2>/dev/null)") && node "$OMH_ROOT/generate-dashboard.mjs" $ARGUMENTS
-```
-
-If `CLAUDE_PLUGIN_ROOT` is available, use it directly:
-
-```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/generate-dashboard.mjs" $ARGUMENTS
+SCRIPT=$(find "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins" -name "generate-dashboard.mjs" -path "*/scripts/generate-dashboard.mjs" -print -quit 2>/dev/null) && node "$SCRIPT" $ARGUMENTS
 ```

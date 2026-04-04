@@ -4034,7 +4034,24 @@
     document.body.prepend(banner);
   }
 
+  // ── First-run completion banner ──
+  function showFirstRunBanner() {
+    if (!DATA._firstRun) return;
+    const dr = DATA._dateRange;
+    let dateStr = '';
+    if (dr && dr.from && dr.to) {
+      const fmt = d => new Date(d).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+      dateStr = ' · ' + fmt(dr.from) + ' – ' + fmt(dr.to);
+    }
+    const banner = document.createElement('div');
+    banner.className = 'firstrun-banner';
+    banner.innerHTML = '<span>' + t('firstRunBannerMsg') + dateStr + '</span>'
+      + '<button class="firstrun-close" onclick="this.parentElement.remove()" title="' + t('close') + '">✕</button>';
+    document.body.prepend(banner);
+  }
+
   // ── Boot ──
   init();
   showPartialBanner();
+  showFirstRunBanner();
   checkDataVersion();
