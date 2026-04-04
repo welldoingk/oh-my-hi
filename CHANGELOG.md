@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.4.4] - 2026-04-04
+
+### Fixed
+- SKILL.md: show explicit error message (`ERROR — generate-dashboard.mjs not found`) and exit 1 when script is not found, instead of silently failing
+
+### Added
+- Tests: `test/firstrun.test.mjs` — 10 tests covering `computeDateRange` logic (empty data, null timestamps, multi-scope aggregation) and SKILL.md bash command correctness
+- Tests: `web-ui.test.mjs` — `showFirstRunBanner` function, `_firstRun`/`_dateRange` references, CSS classes, locale keys
+- Tests: `build.test.mjs` — normal builds must not include `_firstRun` or `_partial` flags
+
 ## [0.4.3] - 2026-04-04
 
 ### Fixed
