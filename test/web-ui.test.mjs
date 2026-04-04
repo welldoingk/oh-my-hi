@@ -129,6 +129,21 @@ describe('Web UI — Templates', () => {
       assert.ok(js.includes('dayNames'));
       assert.ok(js.includes("dow"));
     });
+
+    it('should have showFirstRunBanner function called at boot', () => {
+      assert.ok(js.includes('function showFirstRunBanner'), 'showFirstRunBanner function defined');
+      assert.ok(js.includes('showFirstRunBanner()'), 'showFirstRunBanner called at boot');
+    });
+
+    it('should reference _firstRun and _dateRange from DATA', () => {
+      assert.ok(js.includes('DATA._firstRun'), '_firstRun flag checked');
+      assert.ok(js.includes('DATA._dateRange'), '_dateRange used for date range display');
+    });
+
+    it('should have firstrun close button inline handler', () => {
+      assert.ok(js.includes('firstrun-banner'), 'firstrun-banner class used');
+      assert.ok(js.includes('firstrun-close'), 'firstrun-close class used');
+    });
   });
 
   describe('styles.css', () => {
@@ -175,6 +190,17 @@ describe('Web UI — Templates', () => {
       assert.ok(css.includes('.cost-trend-label'));
     });
 
+    it('should have first-run completion banner styles', () => {
+      assert.ok(css.includes('.firstrun-banner'), '.firstrun-banner class defined');
+      assert.ok(css.includes('.firstrun-close'), '.firstrun-close button class defined');
+    });
+
+    it('should include firstrun-banner in shared banner base rule', () => {
+      // .firstrun-banner must share position/layout base with .update-banner and .partial-banner
+      const sharedRuleMatch = css.match(/\.update-banner[^{]*\.partial-banner[^{]*\.firstrun-banner|\.firstrun-banner[^{]*\.update-banner|\.update-banner[^{]*\.firstrun-banner/);
+      assert.ok(sharedRuleMatch, '.firstrun-banner included in shared banner base selector');
+    });
+
     it('should have responsive styles', () => {
       assert.ok(css.includes('@media'));
       assert.ok(css.includes('max-width: 768px'));
@@ -207,6 +233,7 @@ describe('Web UI — Templates', () => {
         'compareToggle', 'comparePrev',
         'unusedCleanupTipTitle', 'unusedCleanupTipDetail',
         'cacheTipLowHitTitle', 'cacheTipGoodTitle', 'cacheTipHighCreationTitle', 'cacheTipNoSessionTitle',
+        'firstRunBannerMsg', 'close',
       ];
       for (const key of requiredKeys) {
         assert.ok(en[key], `missing en key: ${key}`);

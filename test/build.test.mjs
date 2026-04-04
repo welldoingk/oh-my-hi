@@ -78,6 +78,16 @@ describe('Build', () => {
       // Test runs from the git repo, so _devBuild should be true
       assert.equal(data._devBuild, true);
     });
+
+    it('should NOT have _firstRun flag in normal --data-only build', () => {
+      // _firstRun is only set during the first full run (no cache)
+      // After that, subsequent builds must not carry the flag
+      assert.equal(data._firstRun, undefined, '_firstRun must be absent in cached builds');
+    });
+
+    it('should NOT have _partial flag in normal --data-only build', () => {
+      assert.equal(data._partial, undefined, '_partial must be absent in full builds');
+    });
   });
 
   describe('index.html', () => {
