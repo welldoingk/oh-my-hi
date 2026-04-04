@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.7] - 2026-04-04
+
+### Fixed
+- Banner "seen" state now tracked via URL `?seen=<generatedAt>` instead of `localStorage` — `localStorage` is blocked on `file://` URLs in Chrome, causing the banner to show on every refresh. `history.replaceState` persists across refreshes without any storage API
+- `_dateRange` now included in all builds (was only set during first-run), so banner always shows date range
+- Banner auto-hide: added `setTimeout` fallback in case `transitionend` event does not fire
+
 ## [0.4.6] - 2026-04-04
 
 ### Changed
