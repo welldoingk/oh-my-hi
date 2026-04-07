@@ -289,7 +289,7 @@
       currentSessionId = decodeURIComponent(parts.slice(1).join('/'));
       currentDetail = null;
       expandedCategories._tokens = true;
-    } else if (view === 'overview' || view === 'structure' || view === 'tokens' || view === 'tokens-cost' || view === 'tokens-prompt' || view === 'tokens-session' || view === 'tokens-analysis' || view === 'help') {
+    } else if (view === 'overview' || view === 'structure' || view === 'context' || view === 'tokens' || view === 'tokens-cost' || view === 'tokens-prompt' || view === 'tokens-session' || view === 'tokens-analysis' || view === 'help') {
       currentView = view === 'tokens-analysis' ? 'tokens-prompt' : view;
       currentDetail = null;
       if (view.startsWith('tokens')) expandedCategories._tokens = true;
@@ -686,6 +686,7 @@
         + '</div>';
     }
     html += navItem('structure', '🗂️', t('structure'), null, currentView === 'structure' && !currentDetail);
+    html += navItem('context', '🪟', t('contextExplorer'), null, currentView === 'context' && !currentDetail);
     html += '<div class="nav-separator"></div>';
 
     CATEGORIES.forEach((cat) => {
@@ -790,6 +791,8 @@
       renderSessionDetail();
     } else if (currentView === 'structure') {
       renderStructure();
+    } else if (currentView === 'context') {
+      renderContextExplorer();
     } else if (currentView === 'help') {
       renderHelp();
     } else {
@@ -3309,6 +3312,806 @@
 
     // Output
     drawNode(outputNode, false);
+  }
+
+  // ── Context Window Explorer ──
+  // Ported from https://code.claude.com/docs/en/context-window (interactive simulation).
+  // Single source of truth for events/gates/meta; renders via innerHTML and updates via closure state.
+  function renderContextExplorer() {
+    const MAX = 200000;
+    const STARTUP_END = 0.2;
+
+    // Pull real environment stats (from computeContextStats in the build script).
+    // For any event marked with `statKey`, we override the illustrative default
+    // with the measured value. Zero-valued stats still get shown (they are informative).
+    const stats = getScopeData().contextStats || {};
+
+    // Each event has an `id` used to look up `cwe_ev{id}_label`, `_desc`, and optionally `_tip`.
+    // `statKey` points to a field in `stats` that overrides `tokens` (or `subTokens` for sub events).
+    const EVENTS = [
+      { id: 1,  t: 0.015, kind: 'auto',   tokens: 4200, color: '#6B6964', vis: 'hidden', link: null },
+      { id: 2,  t: 0.035, kind: 'auto',   tokens: 680,  color: '#E8A45C', vis: 'hidden', statKey: 'autoMemoryTokens',  link: 'https://code.claude.com/docs/en/memory#auto-memory' },
+      { id: 3,  t: 0.06,  kind: 'auto',   tokens: 280,  color: '#6B6964', vis: 'hidden', link: null },
+      { id: 4,  t: 0.08,  kind: 'auto',   tokens: 120,  color: '#9B7BC4', vis: 'hidden', statKey: 'mcpToolsTokens',    link: 'https://code.claude.com/docs/en/mcp#scale-with-mcp-tool-search' },
+      { id: 5,  t: 0.10,  kind: 'auto',   tokens: 450,  color: '#D4A843', vis: 'hidden', statKey: 'skillsDescTokens',  noSurviveCompact: true, link: 'https://code.claude.com/docs/en/skills' },
+      { id: 6,  t: 0.12,  kind: 'auto',   tokens: 320,  color: '#6A9BCC', vis: 'hidden', statKey: 'globalClaudeTokens',link: 'https://code.claude.com/docs/en/memory#choose-where-to-put-claude-md-files' },
+      { id: 7,  t: 0.14,  kind: 'auto',   tokens: 1800, color: '#6A9BCC', vis: 'hidden', statKey: 'projectClaudeTokens', hasTip: true, link: 'https://code.claude.com/docs/en/memory' },
+      { id: 8,  t: 0.22,  kind: 'user',   tokens: 45,   color: '#558A42', vis: 'full',   link: null },
+      { id: 9,  t: 0.28,  kind: 'claude', tokens: 2400, color: '#8A8880', vis: 'brief',  hasTip: true, link: null },
+      { id: 10, t: 0.32,  kind: 'claude', tokens: 1100, color: '#8A8880', vis: 'brief',  link: null },
+      { id: 11, t: 0.35,  kind: 'auto',   tokens: 380,  color: '#4A9B8E', vis: 'brief',  link: 'https://code.claude.com/docs/en/memory#path-specific-rules' },
+      { id: 12, t: 0.38,  kind: 'claude', tokens: 1800, color: '#8A8880', vis: 'brief',  link: null },
+      { id: 13, t: 0.41,  kind: 'claude', tokens: 1600, color: '#8A8880', vis: 'brief',  link: null },
+      { id: 14, t: 0.44,  kind: 'auto',   tokens: 290,  color: '#4A9B8E', vis: 'brief',  link: 'https://code.claude.com/docs/en/memory#path-specific-rules' },
+      { id: 15, t: 0.47,  kind: 'claude', tokens: 600,  color: '#A09E96', vis: 'brief',  link: null },
+      { id: 16, t: 0.53,  kind: 'claude', tokens: 800,  color: '#D97757', vis: 'full',   link: null },
+      { id: 17, t: 0.57,  kind: 'claude', tokens: 400,  color: '#D97757', vis: 'full',   link: null },
+      { id: 18, t: 0.59,  kind: 'hook',   tokens: 120,  color: '#B8860B', vis: 'hidden', hasTip: true, link: 'https://code.claude.com/docs/en/hooks-guide' },
+      { id: 19, t: 0.62,  kind: 'claude', tokens: 600,  color: '#D97757', vis: 'full',   link: null },
+      { id: 20, t: 0.64,  kind: 'hook',   tokens: 100,  color: '#B8860B', vis: 'hidden', link: 'https://code.claude.com/docs/en/hooks-guide' },
+      { id: 21, t: 0.67,  kind: 'claude', tokens: 1200, color: '#A09E96', vis: 'brief',  link: null },
+      { id: 22, t: 0.70,  kind: 'claude', tokens: 400,  color: '#D97757', vis: 'full',   link: null },
+      { id: 23, t: 0.72,  kind: 'user',   tokens: 40,   color: '#558A42', vis: 'full',   hasTip: true, link: null },
+      { id: 24, t: 0.79,  kind: 'claude', tokens: 80,   color: '#D97757', vis: 'brief',  link: 'https://code.claude.com/docs/en/sub-agents' },
+      { id: 25, t: 0.795, kind: 'sub',    tokens: 0, subTokens: 900,  color: '#6B6964', vis: 'hidden', link: 'https://code.claude.com/docs/en/sub-agents#enable-persistent-memory' },
+      { id: 26, t: 0.80,  kind: 'sub',    tokens: 0, subTokens: 1800, color: '#6A9BCC', vis: 'hidden', statKey: 'projectClaudeTokens', subStat: true, link: 'https://code.claude.com/docs/en/sub-agents' },
+      { id: 27, t: 0.805, kind: 'sub',    tokens: 0, subTokens: 970,  color: '#9B7BC4', vis: 'hidden', statKey: 'mcpPlusSkills',       subStat: true, link: 'https://code.claude.com/docs/en/sub-agents' },
+      { id: 28, t: 0.81,  kind: 'sub',    tokens: 0, subTokens: 120,  color: '#558A42', vis: 'hidden', link: 'https://code.claude.com/docs/en/sub-agents' },
+      { id: 29, t: 0.82,  kind: 'sub',    tokens: 0, subTokens: 2200, color: '#8A8880', vis: 'hidden', link: 'https://code.claude.com/docs/en/sub-agents' },
+      { id: 30, t: 0.825, kind: 'sub',    tokens: 0, subTokens: 800,  color: '#8A8880', vis: 'hidden', link: 'https://code.claude.com/docs/en/sub-agents' },
+      { id: 31, t: 0.83,  kind: 'sub',    tokens: 0, subTokens: 3100, color: '#8A8880', vis: 'hidden', link: 'https://code.claude.com/docs/en/sub-agents' },
+      { id: 32, t: 0.85,  kind: 'claude', tokens: 420, color: '#D97757', vis: 'brief',   link: 'https://code.claude.com/docs/en/sub-agents' },
+      { id: 33, t: 0.86,  kind: 'claude', tokens: 1200, color: '#D97757', vis: 'full',   link: null },
+      { id: 34, t: 0.875, kind: 'user',   tokens: 180, color: '#558A42', vis: 'full',    link: 'https://code.claude.com/docs/en/interactive-mode#bash-mode-with-prefix' },
+      { id: 35, t: 0.89,  kind: 'user',   tokens: 620, color: '#558A42', vis: 'brief',   hasTip: true, link: 'https://code.claude.com/docs/en/skills#control-who-invokes-a-skill' },
+      { id: 36, t: 0.93,  kind: 'compact',tokens: 0,   color: '#D97757', vis: 'brief',   link: 'https://code.claude.com/docs/en/how-claude-code-works#the-context-window' }
+    ];
+
+    const GATES = [
+      { at: 0.18,  kind: 'prompt',  gateKey: 'cwe_gate1', resumeTo: 0.22 },
+      { at: 0.705, kind: 'prompt',  gateKey: 'cwe_gate2', resumeTo: 0.72 },
+      { at: 0.865, kind: 'bang',    gateKey: 'cwe_gate3', resumeTo: 0.875 },
+      { at: 0.88,  kind: 'slash',   gateKey: 'cwe_gate4', resumeTo: 0.89 },
+      { at: 0.90,  kind: 'compact', gateKey: 'cwe_gate5', resumeTo: 1 }
+    ];
+
+    const KIND_META = {
+      auto:    { badgeKey: 'cwe_kindAuto',    detailKey: 'cwe_kindAutoDetail',    badgeBg: 'rgba(94,93,89,0.15)',  badgeColor: '#8A8880' },
+      user:    { badgeKey: 'cwe_kindUser',    detailKey: 'cwe_kindUserDetail',    badgeBg: 'rgba(85,138,66,0.15)', badgeColor: '#6BA656' },
+      claude:  { badgeKey: 'cwe_kindClaude',  detailKey: 'cwe_kindClaudeDetail',  badgeBg: 'rgba(217,119,87,0.12)',badgeColor: '#D97757' },
+      hook:    { badgeKey: 'cwe_kindHook',    detailKey: 'cwe_kindHookDetail',    badgeBg: 'rgba(184,134,11,0.15)',badgeColor: '#CCA020' },
+      compact: { badgeKey: 'cwe_kindCompact', detailKey: 'cwe_kindCompactDetail', badgeBg: 'rgba(217,119,87,0.12)',badgeColor: '#D97757' },
+      sub:     { badgeKey: 'cwe_kindSub',     detailKey: 'cwe_kindSubDetail',     badgeBg: 'rgba(155,123,196,0.12)',badgeColor: '#9B7BC4' }
+    };
+
+    const VIS_META = {
+      hidden: { labelKey: 'cwe_visHidden', subKey: 'cwe_visHiddenSub' },
+      brief:  { labelKey: 'cwe_visBrief',  subKey: 'cwe_visBriefSub' },
+      full:   { labelKey: 'cwe_visFull',   subKey: 'cwe_visFullSub' }
+    };
+
+    const LEGEND = [
+      { c: '#6B6964', labelKey: 'cwe_legSystem' },   { c: '#6A9BCC', labelKey: 'cwe_legClaudeMd' },
+      { c: '#E8A45C', labelKey: 'cwe_legMemory' },   { c: '#D4A843', labelKey: 'cwe_legSkills' },
+      { c: '#9B7BC4', labelKey: 'cwe_legMcp' },      { c: '#4A9B8E', labelKey: 'cwe_legRules' },
+      { c: '#558A42', labelKey: 'cwe_legYou' },      { c: '#8A8880', labelKey: 'cwe_legFiles' },
+      { c: '#A09E96', labelKey: 'cwe_legOutput' },   { c: '#D97757', labelKey: 'cwe_legClaude' },
+      { c: '#B8860B', labelKey: 'cwe_legHooks' }
+    ];
+
+    // Helpers: fetch localized label/desc/tip, overridden by user-typed text when the
+    // event corresponds to a gate the user has already sent.
+    function typedFor(eventId) {
+      const gateIdx = GATE_EVENT_ID.indexOf(eventId);
+      if (gateIdx < 0) return null;
+      const v = state.typedTexts[gateIdx];
+      return (v != null && v.length > 0) ? v : null;
+    }
+    const evtLabel = (e) => typedFor(e.id) || t('cwe_ev' + e.id + '_label');
+    const evtDesc  = (e) => {
+      const typed = typedFor(e.id);
+      return typed ? '"' + typed + '"' : t('cwe_ev' + e.id + '_desc');
+    };
+    const evtTip   = (e) => e.hasTip ? t('cwe_ev' + e.id + '_tip') : null;
+    function resolveStat(statKey) {
+      if (!statKey) return null;
+      if (statKey === 'mcpPlusSkills') {
+        const a = stats.mcpToolsTokens, b = stats.skillsDescTokens;
+        if (a == null && b == null) return null;
+        return (a || 0) + (b || 0);
+      }
+      return stats[statKey] != null ? stats[statKey] : null;
+    }
+    // Rough client-side token estimator used for user-typed prompts.
+    // Matches the build-script heuristic: ASCII ~4 chars/token, non-ASCII ~1.8.
+    function cwEstimateTokens(text) {
+      if (!text) return 0;
+      let n = 0;
+      for (let i = 0; i < text.length; i++) {
+        const code = text.charCodeAt(i);
+        n += code < 128 ? 0.25 : 0.55;
+      }
+      return Math.max(1, Math.round(n));
+    }
+    // Returns final tokens used for an event (typed text → estimated, stat → real, else default).
+    function evtTokens(e) {
+      if (e.subStat) return e.tokens; // sub events override subTokens instead
+      // Only user prompts (events 8, 23) get their token count estimated from typed text.
+      // Command gates (34–36) keep their illustrative values because the original tokens represent
+      // command + rendered output, not just the command string.
+      if (e.id === 8 || e.id === 23) {
+        const typed = typedFor(e.id);
+        if (typed) return cwEstimateTokens(typed);
+      }
+      const real = resolveStat(e.statKey);
+      return real != null ? real : e.tokens;
+    }
+    function evtSubTokens(e) {
+      if (!e.subStat) return e.subTokens || 0;
+      const real = resolveStat(e.statKey);
+      return real != null ? real : (e.subTokens || 0);
+    }
+
+    const fmt = (n) => n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'K' : n + '';
+    const renderCode = (s) => {
+      if (!s) return '';
+      return escapeHtml(s).split('`').map((p, i) => i % 2 === 1
+        ? '<code class="cw-code">' + p + '</code>' : p).join('');
+    };
+
+    // Maps a gate index (position in GATES) to the event id it corresponds to.
+    // When the user types in a gate's input, the linked event's label/desc show the typed text.
+    const GATE_EVENT_ID = [8, 23, 34, 35, 36];
+
+    // ── State ──
+    const state = {
+      time: 0, playing: false, hovIdx: null, selIdx: null, hovCat: null,
+      gatesPassed: 0, hasInteracted: false, isFullscreen: false, rafId: null, lastTs: null,
+      // User-typed prompt per gate index. Undefined until the user has seen that gate.
+      typedTexts: {},
+      // Auto-focus the gate input the first time a new gate appears.
+      gateFocusWanted: false
+    };
+
+    // Cancel any previous animation / key handler on re-entry
+    if (window._cwRafId) { cancelAnimationFrame(window._cwRafId); window._cwRafId = null; }
+    if (window._cwKeyHandler) { window.removeEventListener('keydown', window._cwKeyHandler); window._cwKeyHandler = null; }
+    if (window._cwFsHandler) { document.removeEventListener('fullscreenchange', window._cwFsHandler); window._cwFsHandler = null; }
+
+    // ── Render shell (static structure + styles) ──
+    content.innerHTML = ''
+      + '<style>'
+      + '.cw-root {'
+      + '  --cw-bg: #FAFAF8; --cw-text: #1A1918; --cw-text-2: #3D3C38; --cw-text-3: #5E5D59;'
+      + '  --cw-text-dim: #6E6C64; --cw-text-faint: #8A8880;'
+      + '  --cw-surface: rgba(0,0,0,0.025); --cw-surface-2: rgba(0,0,0,0.04);'
+      + '  --cw-border: rgba(0,0,0,0.08); --cw-track: rgba(0,0,0,0.04);'
+      + '  --cw-hover: rgba(0,0,0,0.04); --cw-rail: rgba(0,0,0,0.08);'
+      + '  --cw-scrollbar: rgba(0,0,0,0.22);'
+      + '  --cw-font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;'
+      + '  background: var(--cw-bg); border-radius: 12px; overflow: hidden;'
+      + '  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;'
+      + '  color: var(--cw-text); border: 1px solid var(--cw-border);'
+      + '  display: flex; flex-direction: column;'
+      + '}'
+      + 'body.dark .cw-root {'
+      + '  --cw-bg: #111110; --cw-text: #E8E6DC; --cw-text-2: #B8B6AE; --cw-text-3: #9C9A92;'
+      + '  --cw-text-dim: #8A8880; --cw-text-faint: #6E6C64;'
+      + '  --cw-surface: rgba(255,255,255,0.02); --cw-surface-2: rgba(255,255,255,0.015);'
+      + '  --cw-border: rgba(255,255,255,0.06); --cw-track: rgba(255,255,255,0.03);'
+      + '  --cw-hover: rgba(255,255,255,0.04); --cw-rail: rgba(255,255,255,0.04);'
+      + '  --cw-scrollbar: rgba(255,255,255,0.18);'
+      + '}'
+      + '.cw-root:fullscreen { height: 100vh; border-radius: 0; }'
+      + '.cw-scroll::-webkit-scrollbar { width: 6px; }'
+      + '.cw-scroll::-webkit-scrollbar-track { background: transparent; }'
+      + '.cw-scroll::-webkit-scrollbar-thumb { background: var(--cw-scrollbar); border-radius: 3px; }'
+      + '@keyframes cw-blink { 50% { opacity: 0; } }'
+      + '@keyframes cw-fadein { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }'
+      + '.cw-compacted-row { animation: cw-fadein 0.3s ease-out backwards; }'
+      + '.cw-code { font-family: var(--cw-font-mono); font-size: 0.92em; background: var(--cw-track); padding: 1px 4px; border-radius: 3px; }'
+      + '.cw-mobile-fallback { display: none; padding: 14px 16px; border-radius: 8px; font-size: 14px; border: 1px solid var(--cw-border); background: var(--cw-surface); color: var(--text); }'
+      + '@media (max-width: 700px) { .cw-root { display: none !important; } .cw-mobile-fallback { display: block; } }'
+      + '.cw-root a { color: #D97757; }'
+      + '</style>'
+      + '<div class="cw-mobile-fallback">' + escapeHtml(t('cwe_mobileFallback')) + '</div>'
+      + '<div class="cw-root" id="cw-root" tabindex="-1">'
+      +   '<div style="padding:16px 20px 12px;display:flex;align-items:flex-end;gap:24px">'
+      +     '<div style="flex:1;min-width:0">'
+      +       '<div style="font-size:18px;font-weight:600;letter-spacing:-0.3px;line-height:1">' + escapeHtml(t('cwe_title')) + '</div>'
+      +       '<div style="font-size:14px;color:var(--cw-text-dim);margin-top:4px">' + escapeHtml(t('cwe_subtitle')) + '</div>'
+      +     '</div>'
+      +     '<div style="text-align:right;flex-shrink:0">'
+      +       '<div id="cw-tokens-display" style="font-family:var(--cw-font-mono);font-size:20px;font-weight:600;letter-spacing:-0.5px;line-height:1"></div>'
+      +       '<div style="font-family:var(--cw-font-mono);font-size:13px;color:var(--cw-text-dim);margin-top:2px" title="' + escapeHtml(t('cwe_illustrativeTooltip')) + '">/ ' + fmt(MAX) + ' · ' + escapeHtml(t('cwe_illustrative')) + '</div>'
+      +     '</div>'
+      +   '</div>'
+      +   '<div style="padding:0 20px">'
+      +     '<div style="height:4px;border-radius:2px;background:var(--cw-track);overflow:hidden;margin-bottom:6px">'
+      +       '<div id="cw-progress-top" style="width:0%;height:100%;transition:width 0.6s cubic-bezier(0.4,0,0.2,1), background 0.3s"></div>'
+      +     '</div>'
+      +     '<div id="cw-bar" style="height:28px;border-radius:5px;background:var(--cw-track);border:1px solid var(--cw-border);overflow:hidden;display:flex"></div>'
+      +     '<div style="display:flex;gap:12px;margin-top:6px;flex-wrap:wrap;justify-content:space-between">'
+      +       '<div id="cw-legend" style="display:flex;gap:12px;flex-wrap:wrap"></div>'
+      +       '<div style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--cw-text-dim)">'
+      +         '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#558A42" stroke-width="2.5"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>'
+      +         '<span>' + escapeHtml(t('cwe_appearsInTerminal')) + '</span>'
+      +       '</div>'
+      +     '</div>'
+      +   '</div>'
+      +   '<div id="cw-main" style="display:flex;padding:14px 20px 0;gap:16px;height:420px;flex:1;min-height:0">'
+      +     '<div id="cw-timeline" class="cw-scroll" style="flex:1;min-width:0;overflow-y:auto;padding-right:8px;scroll-behavior:smooth"></div>'
+      +     '<div style="width:300px;flex-shrink:0;display:flex;flex-direction:column">'
+      +       '<div id="cw-detail" class="cw-scroll" style="padding:14px 16px;border-radius:10px;background:var(--cw-surface);border:1px solid var(--cw-border);flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:10px"></div>'
+      +     '</div>'
+      +   '</div>'
+      +   '<div style="padding:10px 20px 14px;display:flex;align-items:center;gap:10px">'
+      +     '<button id="cw-play" aria-label="Play" style="width:30px;height:30px;border-radius:6px;border:none;background:rgba(217,119,87,0.1);color:#D97757;cursor:pointer;font-size:15px;font-weight:700;display:flex;align-items:center;justify-content:center">▶</button>'
+      +     '<div style="flex:1;height:3px;border-radius:2px;background:var(--cw-track);overflow:hidden">'
+      +       '<div id="cw-progress-bottom" style="width:0%;height:100%;background:#D97757;transition:width 0.1s linear"></div>'
+      +     '</div>'
+      +     '<span id="cw-percent" style="font-size:12px;font-family:var(--cw-font-mono);color:var(--cw-text-faint);min-width:30px">0%</span>'
+      +     '<button id="cw-fs" aria-label="Fullscreen" title="Fullscreen" style="width:28px;height:28px;border-radius:6px;border:1px solid var(--cw-border);background:var(--cw-surface);color:var(--cw-text-dim);cursor:pointer;font-size:15px;flex-shrink:0;margin-left:4px;display:flex;align-items:center;justify-content:center">⛶</button>'
+      +   '</div>'
+      + '</div>';
+
+    const root = document.getElementById('cw-root');
+    const tokensDisplay = document.getElementById('cw-tokens-display');
+    const progressTop = document.getElementById('cw-progress-top');
+    const barEl = document.getElementById('cw-bar');
+    const legendEl = document.getElementById('cw-legend');
+    const timelineEl = document.getElementById('cw-timeline');
+    const detailEl = document.getElementById('cw-detail');
+    const playBtn = document.getElementById('cw-play');
+    const progressBottom = document.getElementById('cw-progress-bottom');
+    const percentEl = document.getElementById('cw-percent');
+    const fsBtn = document.getElementById('cw-fs');
+
+    // Render legend once
+    legendEl.innerHTML = LEGEND.map((x) => {
+      return '<div class="cw-legend-item" data-cw-legend="' + x.c + '" '
+        + 'style="display:flex;align-items:center;gap:4px;padding:2px 6px;border-radius:4px;cursor:pointer;transition:background 0.1s">'
+        + '<div style="width:6px;height:6px;border-radius:1.5px;background:' + x.c + ';opacity:0.7"></div>'
+        + '<span style="font-size:12px;color:var(--cw-text-dim)">' + escapeHtml(t(x.labelKey)) + '</span>'
+        + '</div>';
+    }).join('');
+
+    // ── Helpers ──
+    function computeView() {
+      const visibleCount = EVENTS.filter((e) => e.t <= state.time).length;
+      const preCompactVisible = EVENTS.slice(0, visibleCount);
+      const compactGateIdx = GATES.length - 1;
+      const isCompacted = state.gatesPassed > compactGateIdx && preCompactVisible.some((e) => e.kind === 'compact');
+
+      let visible, preCompactTotal = 0;
+      if (!isCompacted) {
+        visible = preCompactVisible;
+      } else {
+        const nonCompact = preCompactVisible.filter((e) => e.kind !== 'compact');
+        const autoLoads = nonCompact.filter((e) => e.kind === 'auto' && e.t < STARTUP_END && !e.noSurviveCompact);
+        const summarized = nonCompact.filter((e) => e.t >= STARTUP_END && e.kind !== 'sub');
+        const sumTokens = summarized.reduce((s, e) => s + evtTokens(e), 0);
+        // Synthetic block shown after /compact. `id: 0` → i18n keys cwe_ev0_label / cwe_ev0_desc.
+        const summaryBlock = {
+          id: 0, t: STARTUP_END, kind: 'compact', isSummary: true,
+          tokens: Math.round(sumTokens * 0.12), color: '#A09E96', vis: 'hidden',
+          link: 'https://code.claude.com/docs/en/how-claude-code-works#the-context-window'
+        };
+        visible = autoLoads.concat([summaryBlock]);
+        preCompactTotal = nonCompact.reduce((s, e) => s + evtTokens(e), 0);
+      }
+
+      const blocks = visible.map((e, visIdx) => {
+        return Object.assign({}, e, { _tokens: evtTokens(e), visIdx: visIdx });
+      }).filter((e) => e._tokens > 0 || e.isSummary);
+      const totalTokens = blocks.reduce((s, b) => s + b._tokens, 0);
+      const subTotal = visible.filter((e) => e.kind === 'sub').reduce((s, e) => s + evtSubTokens(e), 0);
+
+      return { visible: visible, blocks: blocks, totalTokens: totalTokens, subTotal: subTotal, isCompacted: isCompacted, preCompactTotal: preCompactTotal };
+    }
+
+    function activeGateNow() {
+      return GATES.find((g, i) => i >= state.gatesPassed && state.time >= g.at && state.time < g.resumeTo) || null;
+    }
+
+    function getTakeaway(focusT, isCompacted) {
+      if (isCompacted) return t('cwe_take_compacted');
+      if (focusT < STARTUP_END) return t('cwe_take_start');
+      if (focusT < 0.28) return t('cwe_take_userPrompt');
+      if (focusT < 0.50) return t('cwe_take_fileRead');
+      if (focusT < 0.71) return t('cwe_take_hooks');
+      if (focusT < 0.79) return t('cwe_take_followup');
+      if (focusT < 0.87) return t('cwe_take_subagent');
+      if (focusT < 0.88) return t('cwe_take_bang');
+      if (focusT < 0.90) return t('cwe_take_slash');
+      return t('cwe_take_compact');
+    }
+
+    function getTerminalView(focusT, isCompacted) {
+      if (isCompacted) return t('cwe_term_compacted');
+      if (focusT < STARTUP_END) return t('cwe_term_start');
+      if (focusT < 0.28) return t('cwe_term_userPrompt');
+      if (focusT < 0.52) return t('cwe_term_fileRead');
+      if (focusT < 0.72) return t('cwe_term_claudeWork');
+      if (focusT < 0.79) return t('cwe_term_followup');
+      if (focusT < 0.86) return t('cwe_term_subagent');
+      if (focusT < 0.90) return t('cwe_term_commitPush');
+      return t('cwe_term_full');
+    }
+
+    // ── Render sub-regions ──
+    function renderBarSegments(view) {
+      const activeIdx = state.selIdx !== null ? state.selIdx : state.hovIdx;
+      const html = view.blocks.map((b, i) => {
+        const w = Math.max(b._tokens / MAX * 100, 0.15);
+        const isHov = b.visIdx === activeIdx;
+        const catMatch = state.hovCat && b.color === state.hovCat;
+        const dimmed = state.hovCat ? !catMatch : (activeIdx !== null && !isHov);
+        const opacity = (isHov || catMatch) ? 1 : (dimmed ? 0.25 : 0.65);
+        const borderR = i < view.blocks.length - 1 ? '0.5px solid var(--cw-border)' : 'none';
+        return '<div data-cw-block="' + b.visIdx + '" style="width:' + w + '%;height:100%;background:' + b.color + ';opacity:' + opacity + ';border-right:' + borderR + ';transition:opacity 0.15s;cursor:pointer"></div>';
+      }).join('');
+      barEl.innerHTML = html;
+    }
+
+    function renderTimeline(view) {
+      const activeGate = activeGateNow();
+      const { visible, subTotal, isCompacted, preCompactTotal, totalTokens } = view;
+      let html = '';
+
+      if (visible.length === 0 && !state.playing) {
+        html += '<div style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px">'
+          + '<div style="font-family:var(--cw-font-mono);font-size:16px;color:var(--cw-text-dim);display:flex;align-items:center;gap:8px">'
+          +   '<span style="color:var(--cw-text-faint)">$</span><span>claude</span>'
+          +   '<span style="display:inline-block;width:8px;height:16px;background:var(--cw-text-dim);opacity:0.5;animation:cw-blink 1s step-end infinite"></span>'
+          + '</div>'
+          + '<button data-cw-start="1" style="padding:10px 20px;border-radius:8px;border:1px solid rgba(217,119,87,0.3);background:rgba(217,119,87,0.08);color:#D97757;font-size:15px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:8px"><span>▶</span><span>' + escapeHtml(t('cwe_startSession')) + '</span></button>'
+          + '<div style="font-size:13px;color:var(--cw-text-faint);max-width:280px;text-align:center;line-height:1.5">'
+          +   renderCode(t('cwe_startHint'))
+          + '</div>'
+          + '</div>';
+      }
+
+      if (isCompacted) {
+        html += '<div style="margin-bottom:10px;padding:10px 12px;border-radius:6px;background:rgba(217,119,87,0.05);border:1px solid rgba(217,119,87,0.15)">'
+          + '<div style="font-size:13px;font-weight:600;color:#D97757;margin-bottom:3px">' + escapeHtml(t('cwe_afterCompactTitle')) + '</div>'
+          + '<div style="font-size:13px;color:var(--cw-text-3);line-height:1.5;font-family:var(--cw-font-mono)">'
+          +   escapeHtml(t('cwe_afterCompactStats', fmt(preCompactTotal), fmt(totalTokens), fmt(preCompactTotal - totalTokens)))
+          + '</div>'
+          + '<div style="font-size:13px;color:var(--cw-text-dim);line-height:1.5;margin-top:4px">'
+          +   escapeHtml(t('cwe_afterCompactDesc'))
+          + '</div>'
+          + '</div>';
+      }
+
+      if (state.time > 0 && visible.length > 0) {
+        html += '<div style="font-size:12px;font-weight:700;color:var(--cw-text-faint);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:6px;padding-left:28px">'
+          + escapeHtml(isCompacted ? t('cwe_reloadedAfterCompact') : t('cwe_beforeYouType'))
+          + '</div>';
+      }
+
+      if (state.time > 0) {
+        visible.forEach((evt, i) => {
+          const meta = KIND_META[evt.kind];
+          const isHov = state.hovIdx === i;
+          const isSel = state.selIdx === i;
+          const prevKind = i > 0 ? visible[i - 1].kind : null;
+          const isSub = evt.kind === 'sub';
+          const enteringSub = isSub && prevKind !== 'sub';
+          const leavingSub = prevKind === 'sub' && !isSub;
+          let showPhase = null;
+          if (evt.kind === 'user' && prevKind !== 'user') showPhase = t('cwe_phaseYou');
+          else if (evt.kind === 'claude' && prevKind === 'user') showPhase = t('cwe_phaseClaudeWorks');
+          else if (evt.isSummary) showPhase = t('cwe_phaseSummarized');
+          const isNewRow = isCompacted && !(evt.kind === 'auto' && evt.t < STARTUP_END);
+
+          const rowOpen = '<div' + (isNewRow ? ' class="cw-compacted-row" style="animation-delay:' + (i * 60) + 'ms"' : '') + '>';
+
+          if (showPhase) {
+            html += rowOpen + '<div style="font-size:12px;font-weight:700;color:var(--cw-text-faint);text-transform:uppercase;letter-spacing:0.6px;margin-top:14px;margin-bottom:6px;padding-left:28px">' + escapeHtml(showPhase) + '</div>';
+          } else {
+            html += rowOpen;
+          }
+
+          if (enteringSub) {
+            html += '<div style="margin-left:28px;margin-top:6px;margin-bottom:2px;padding-left:10px;border-left:2px solid rgba(155,123,196,0.4);font-size:12px;font-weight:600;color:#9B7BC4;text-transform:uppercase;letter-spacing:0.5px">' + escapeHtml(t('cwe_subagentCtxLabel')) + '</div>';
+          }
+          if (leavingSub) {
+            html += '<div style="margin-left:28px;margin-bottom:6px;padding-left:10px;padding-bottom:6px;border-left:2px solid rgba(155,123,196,0.4);font-size:12px;color:var(--cw-text-dim);font-family:var(--cw-font-mono)">↓ ' + escapeHtml(t('cwe_subagentReturned', fmt(subTotal))) + '</div>';
+          }
+
+          const dimmed = state.hovCat && evt.color !== state.hovCat;
+          const rowBg = (isSel || isHov) ? 'var(--cw-hover)' : 'transparent';
+          const outline = isSel ? '1px solid rgba(217,119,87,0.4)' : 'none';
+          const rowStyle = 'display:flex;align-items:flex-start;border-radius:6px;cursor:pointer;'
+            + 'background:' + rowBg + ';outline:' + outline + ';opacity:' + (dimmed ? 0.35 : 1) + ';'
+            + 'transition:background 0.1s,opacity 0.15s;'
+            + (isSub ? 'margin-left:28px;padding-left:10px;border-left:2px solid rgba(155,123,196,0.4);' : '');
+
+          html += '<div data-cw-item="' + i + '" style="' + rowStyle + '">';
+          const dotSz = (evt.kind === 'user' || evt.kind === 'compact') ? 10 : 7;
+          html += '<div style="width:28px;display:flex;flex-direction:column;align-items:center;padding-top:8px;flex-shrink:0">'
+            + '<div style="width:' + dotSz + 'px;height:' + dotSz + 'px;border-radius:50%;background:' + evt.color + ';opacity:' + (isHov ? 1 : 0.6) + ';transition:opacity 0.15s;' + (isHov ? 'box-shadow:0 0 8px ' + evt.color + '40' : '') + '"></div>';
+          if (i < visible.length - 1) {
+            html += '<div style="width:1.5px;flex:1;background:var(--cw-rail);margin-top:2px;min-height:6px"></div>';
+          }
+          html += '</div>';
+
+          const labelColor = isHov ? 'var(--cw-text)'
+            : evt.kind === 'user' ? '#558A42'
+            : evt.kind === 'auto' ? 'var(--cw-text-dim)' : 'var(--cw-text-2)';
+          const tok = evtTokens(evt);
+          const subTok = evtSubTokens(evt);
+          html += '<div style="flex:1;min-width:0;padding:5px 10px 5px 4px;display:flex;align-items:center;gap:8px">'
+            + '<span style="font-size:12px;font-weight:600;padding:1px 5px;border-radius:3px;background:' + meta.badgeBg + ';color:' + meta.badgeColor + ';flex-shrink:0;font-family:var(--cw-font-mono)">' + escapeHtml(t(meta.badgeKey)) + '</span>'
+            + '<span style="font-size:15px;font-family:var(--cw-font-mono);color:' + labelColor + ';flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:' + (evt.kind === 'user' ? 550 : 400) + '">' + escapeHtml(evtLabel(evt)) + '</span>';
+
+          if (tok > 0) {
+            html += '<span style="font-size:12px;font-family:var(--cw-font-mono);color:var(--cw-text-faint);flex-shrink:0">+' + fmt(tok) + '</span>';
+          }
+          if (subTok > 0) {
+            html += '<span style="font-size:12px;font-family:var(--cw-font-mono);color:#9B7BC4;flex-shrink:0;opacity:0.6">+' + fmt(subTok) + '</span>';
+          }
+          if (tok > 0) {
+            const mw = Math.min(tok / 5000 * 100, 100);
+            html += '<div style="width:50px;height:5px;border-radius:2px;background:var(--cw-track);flex-shrink:0;overflow:hidden">'
+              + '<div style="width:' + mw + '%;height:100%;background:' + evt.color + ';opacity:' + (isHov ? 0.8 : 0.4) + ';transition:opacity 0.15s"></div>'
+              + '</div>';
+          }
+          // Eye icon
+          html += '<span style="width:14px;flex-shrink:0;display:flex;justify-content:center" title="' + escapeHtml(t(VIS_META[evt.vis].labelKey)) + '">';
+          if (evt.vis !== 'hidden') {
+            const stroke = evt.vis === 'full' ? '#558A42' : 'currentColor';
+            const op = evt.vis === 'full' ? 1 : 0.5;
+            html += '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="' + stroke + '" stroke-width="2" style="color:var(--cw-text-faint);opacity:' + op + '"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+          }
+          html += '</span>';
+          html += '</div>'; // label container
+          html += '</div>'; // row
+          html += '</div>'; // rowOpen wrapper
+        });
+      }
+
+      // Gate card — editable prompt input. Pre-filled with default, user can replace.
+      if (activeGate) {
+        const gateIdx = state.gatesPassed;
+        const currentVal = state.typedTexts[gateIdx] != null ? state.typedTexts[gateIdx] : t(activeGate.gateKey);
+        const inputAttrs = 'data-cw-input="' + gateIdx + '" type="text" autocomplete="off" spellcheck="false" '
+          + 'value="' + escapeHtml(currentVal) + '"';
+        const isCompact = activeGate.kind === 'compact';
+
+        if (!isCompact) {
+          html += '<div style="padding-left:28px;margin-top:12px;padding-right:8px">'
+            + '<div style="font-size:11px;font-weight:600;color:#6BA656;font-family:var(--cw-font-mono);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;padding-left:2px">' + escapeHtml(t('cwe_youTypeHeader')) + '</div>'
+            + '<div style="display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:6px;background:rgba(85,138,66,0.06);border:1px solid rgba(85,138,66,0.2)">'
+            +   '<span style="color:#558A42;font-size:15px;font-family:var(--cw-font-mono);flex-shrink:0">❯</span>'
+            +   '<input ' + inputAttrs + ' style="flex:1;min-width:0;background:transparent;border:none;outline:none;font:15px var(--cw-font-mono);color:var(--cw-text-2);padding:0;line-height:1.5" />'
+            +   '<button data-cw-gate="1" style="padding:5px 12px;border-radius:5px;border:none;background:#558A42;color:#fff;font-size:13px;font-weight:600;cursor:pointer;flex-shrink:0">'
+            +     escapeHtml(activeGate.kind === 'prompt' ? t('cwe_sendBtn') : t('cwe_runBtn'))
+            +   '</button>'
+            + '</div>'
+            + '</div>';
+        } else {
+          const barColor = (totalTokens / MAX * 100) > 75 ? '#D97757' : (totalTokens / MAX * 100) > 50 ? '#B8860B' : '#558A42';
+          html += '<div style="padding-left:28px;margin-top:12px;padding-right:8px">'
+            + '<div style="padding:12px 14px;border-radius:6px;background:rgba(217,119,87,0.06);border:1px solid rgba(217,119,87,0.25)">'
+            +   '<div style="font-size:13px;color:var(--cw-text-3);margin-bottom:8px;line-height:1.5">'
+            +     escapeHtml(t('cwe_compactPromptPre')) + ' <span style="font-family:var(--cw-font-mono);font-weight:600;color:' + barColor + '">' + fmt(totalTokens) + ' ' + escapeHtml(t('cwe_tokensWord')) + '</span>. '
+            +     renderCode(t('cwe_compactPromptPost'))
+            +   '</div>'
+            +   '<div style="display:flex;align-items:center;gap:8px">'
+            +     '<span style="color:#D97757;font-size:15px;font-family:var(--cw-font-mono)">❯</span>'
+            +     '<input ' + inputAttrs + ' style="flex:1;min-width:0;background:transparent;border:none;outline:none;font:15px var(--cw-font-mono);color:var(--cw-text-2);padding:0;line-height:1.5" />'
+            +     '<button data-cw-gate="1" style="padding:5px 12px;border-radius:5px;border:none;background:#D97757;color:#fff;font-size:13px;font-weight:600;cursor:pointer;flex-shrink:0">' + escapeHtml(t('cwe_runBtn')) + '</button>'
+            +   '</div>'
+            + '</div>'
+            + '</div>';
+        }
+      }
+
+      timelineEl.innerHTML = html;
+    }
+
+    function renderDetail(view) {
+      const activeIdx = state.selIdx !== null ? state.selIdx : state.hovIdx;
+      const hovEvent = activeIdx !== null ? view.visible[activeIdx] : null;
+      const focusT = hovEvent ? hovEvent.t : state.time;
+      const takeaway = getTakeaway(focusT, view.isCompacted);
+      const terminalView = getTerminalView(focusT, view.isCompacted);
+
+      let html = '';
+      if (hovEvent) {
+        const meta = KIND_META[hovEvent.kind];
+        const tok = evtTokens(hovEvent);
+        const subTok = evtSubTokens(hovEvent);
+        html += '<div>'
+          + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">'
+          +   '<div style="width:10px;height:10px;border-radius:3px;background:' + hovEvent.color + ';opacity:0.8"></div>'
+          +   '<span style="font-size:16px;font-weight:600">' + escapeHtml(evtLabel(hovEvent)) + '</span>'
+          + '</div>'
+          + '<div style="display:flex;width:fit-content;padding:3px 8px;border-radius:4px;margin-bottom:8px;background:' + meta.badgeBg + '">'
+          +   '<span style="font-size:12px;font-weight:600;color:' + meta.badgeColor + '">' + escapeHtml(t(meta.detailKey)) + '</span>'
+          + '</div>';
+        if (tok > 0) {
+          html += '<div style="font-size:14px;font-family:var(--cw-font-mono);color:var(--cw-text-dim);margin-bottom:6px">' + fmt(tok) + ' ' + escapeHtml(t('cwe_tokensWord')) + '</div>';
+        }
+        if (subTok > 0) {
+          html += '<div style="font-size:14px;font-family:var(--cw-font-mono);color:#9B7BC4;margin-bottom:6px">' + escapeHtml(t('cwe_tokensInSubagent', fmt(subTok))) + '</div>';
+        }
+        html += '<p style="font-size:15px;color:var(--cw-text-3);line-height:1.55;margin:0">' + renderCode(evtDesc(hovEvent)) + '</p>';
+
+        const visBg = hovEvent.vis === 'full' ? 'rgba(85,138,66,0.08)' : 'var(--cw-surface-2)';
+        const visBorder = hovEvent.vis === 'full' ? 'rgba(85,138,66,0.2)' : 'var(--cw-border)';
+        const dot = hovEvent.vis === 'full' ? '●' : hovEvent.vis === 'brief' ? '◐' : '○';
+        const dotCol = hovEvent.vis === 'full' ? '#558A42' : 'var(--cw-text-dim)';
+        html += '<div style="margin-top:10px;padding:8px 10px;border-radius:6px;background:' + visBg + ';border:1px solid ' + visBorder + '">'
+          + '<div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">'
+          +   '<span style="font-size:13px;color:' + dotCol + '">' + dot + '</span>'
+          +   '<span style="font-size:12px;font-weight:600;color:var(--cw-text-2)">' + escapeHtml(t(VIS_META[hovEvent.vis].labelKey)) + '</span>'
+          + '</div>'
+          + '<div style="font-size:13px;color:var(--cw-text-dim);line-height:1.4">' + escapeHtml(t(VIS_META[hovEvent.vis].subKey)) + '</div>'
+          + '</div>';
+
+        const tip = evtTip(hovEvent);
+        if (tip) {
+          html += '<div style="margin-top:10px;padding:8px 10px;border-radius:6px;background:rgba(85,138,66,0.06);border:1px solid rgba(85,138,66,0.15)">'
+            + '<div style="font-size:12px;font-weight:600;color:#558A42;margin-bottom:3px;display:flex;align-items:center;gap:4px"><span>💡</span> ' + escapeHtml(t('cwe_saveContext')) + '</div>'
+            + '<div style="font-size:13px;color:var(--cw-text-3);line-height:1.5">' + renderCode(tip) + '</div>'
+            + '</div>';
+        }
+        if (hovEvent.link) {
+          html += '<a href="' + escapeHtml(hovEvent.link) + '" target="_blank" style="display:inline-block;margin-top:10px;font-size:13px;color:#D97757;text-decoration:none;border-bottom:1px solid rgba(217,119,87,0.3)">' + escapeHtml(t('cwe_learnMore')) + '</a>';
+        }
+        html += '</div>';
+      } else {
+        html += '<div style="display:flex;flex-direction:column;align-items:center;text-align:center;gap:4px;padding:12px 0 4px">'
+          + '<div style="font-size:22px;opacity:0.2">👁</div>'
+          + '<div style="font-size:14px;font-weight:500;color:var(--cw-text-dim)">' + escapeHtml(t('cwe_hoverHintTitle')) + '</div>'
+          + '<div style="font-size:12px;color:var(--cw-text-faint);line-height:1.4;max-width:200px">' + escapeHtml(t('cwe_hoverHintDesc')) + '</div>'
+          + '</div>';
+      }
+
+      html += '<div style="padding:10px 12px;border-radius:8px;background:rgba(217,119,87,0.05);border:1px solid rgba(217,119,87,0.12)">'
+        + '<div style="font-size:11px;font-weight:700;color:#D97757;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:3px">' + escapeHtml(t('cwe_keyTakeaway')) + '</div>'
+        + '<div style="font-size:13px;color:var(--cw-text-3);line-height:1.5">' + escapeHtml(takeaway) + '</div>'
+        + '</div>';
+
+      html += '<div style="padding:10px 12px;border-radius:8px;background:var(--cw-surface-2);border:1px solid var(--cw-border)">'
+        + '<div style="font-size:11px;font-weight:700;color:var(--cw-text-dim);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:3px">' + escapeHtml(t('cwe_terminalView')) + '</div>'
+        + '<div style="font-size:13px;color:var(--cw-text-3);line-height:1.5">' + escapeHtml(terminalView) + '</div>'
+        + '</div>';
+
+      detailEl.innerHTML = html;
+      detailEl.scrollTop = 0;
+    }
+
+    function update() {
+      const view = computeView();
+      const pct = view.totalTokens / MAX * 100;
+      const barColor = pct > 75 ? '#D97757' : pct > 50 ? '#B8860B' : '#558A42';
+
+      // Header tokens
+      tokensDisplay.style.color = barColor;
+      tokensDisplay.innerHTML = '~' + fmt(view.totalTokens) + '<span style="font-size:15px;font-weight:500;margin-left:4px">' + escapeHtml(t('cwe_tokensWord')) + '</span>';
+
+      // Top progress line
+      progressTop.style.width = pct + '%';
+      progressTop.style.background = barColor;
+
+      // Stacked bar
+      renderBarSegments(view);
+
+      // Preserve focus + selection on the gate input across re-renders so typing is smooth.
+      let savedInput = null;
+      const active = document.activeElement;
+      if (active && active.matches && active.matches('[data-cw-input]')) {
+        savedInput = {
+          idx: active.getAttribute('data-cw-input'),
+          start: active.selectionStart,
+          end: active.selectionEnd
+        };
+      }
+
+      // Timeline + detail
+      renderTimeline(view);
+      renderDetail(view);
+
+      // Restore focus
+      const gate = activeGateNow();
+      if (savedInput) {
+        const inp = timelineEl.querySelector('[data-cw-input="' + savedInput.idx + '"]');
+        if (inp) {
+          inp.focus();
+          try { inp.setSelectionRange(savedInput.start, savedInput.end); } catch (e) { /* ignore */ }
+        }
+      } else if (state.gateFocusWanted && gate) {
+        const inp = timelineEl.querySelector('[data-cw-input]');
+        if (inp) {
+          inp.focus();
+          inp.setSelectionRange(inp.value.length, inp.value.length);
+          state.gateFocusWanted = false;
+        }
+      }
+
+      // Auto-scroll timeline (but not while the user is typing — jumping would be jarring)
+      if (view.isCompacted) {
+        timelineEl.scrollTo({ top: 0, behavior: 'smooth' });
+      } else if (state.playing || gate) {
+        if (!savedInput) timelineEl.scrollTop = timelineEl.scrollHeight;
+      }
+
+      // Bottom progress
+      progressBottom.style.width = (state.time * 100) + '%';
+      percentEl.textContent = Math.round(state.time * 100) + '%';
+
+      // Play button icon (reuses `gate` computed earlier for focus restore)
+      playBtn.textContent = state.time >= 1 ? '↺' : state.playing ? '⏸' : '▶';
+      playBtn.setAttribute('aria-label', state.time >= 1 ? 'Restart' : gate ? 'Continue' : state.playing ? 'Pause' : 'Play');
+    }
+
+    // ── Animation loop ──
+    function startAnim() {
+      if (state.rafId) cancelAnimationFrame(state.rafId);
+      state.lastTs = null;
+      state.playing = true;
+      const tick = (ts) => {
+        if (!root.isConnected) { state.playing = false; return; }
+        if (!state.playing) return;
+        if (state.lastTs === null) state.lastTs = ts;
+        const dt = (ts - state.lastTs) / 1000;
+        state.lastTs = ts;
+        const next = state.time + dt * 0.032;
+        const prev = state.time;
+        const gate = GATES.find((g, i) => i >= state.gatesPassed && next >= g.at && prev < g.resumeTo);
+        if (gate) {
+          state.time = gate.at;
+          state.playing = false;
+          state.gateFocusWanted = true;
+          update();
+          return;
+        }
+        if (next >= 1) {
+          state.time = 1;
+          state.playing = false;
+          update();
+          return;
+        }
+        state.time = next;
+        update();
+        state.rafId = requestAnimationFrame(tick);
+        window._cwRafId = state.rafId;
+      };
+      state.rafId = requestAnimationFrame(tick);
+      window._cwRafId = state.rafId;
+      update();
+    }
+
+    function sendGate() {
+      const gate = activeGateNow();
+      if (!gate) return;
+      const gateIdx = state.gatesPassed;
+      // Capture whatever's currently in the input box (user-edited or default).
+      const inp = timelineEl.querySelector('[data-cw-input="' + gateIdx + '"]');
+      if (inp) {
+        state.typedTexts[gateIdx] = inp.value;
+      } else if (state.typedTexts[gateIdx] == null) {
+        state.typedTexts[gateIdx] = t(gate.gateKey);
+      }
+      const isCompact = gate.kind === 'compact';
+      state.gatesPassed += 1;
+      state.time = gate.resumeTo;
+      state.selIdx = null;
+      state.hovIdx = null;
+      if (!isCompact) startAnim(); else { state.playing = false; update(); }
+    }
+
+    function togglePlay() {
+      if (state.time >= 1) {
+        state.time = 0;
+        state.gatesPassed = 0;
+        state.selIdx = null;
+        state.hovIdx = null;
+        startAnim();
+        return;
+      }
+      if (activeGateNow()) { sendGate(); return; }
+      if (state.playing) { state.playing = false; update(); } else { startAnim(); }
+    }
+
+    // ── Event wiring ──
+    root.addEventListener('click', (e) => {
+      state.hasInteracted = true;
+      const startBtn = e.target.closest('[data-cw-start]');
+      if (startBtn) { startAnim(); return; }
+      const gateBtn = e.target.closest('[data-cw-gate]');
+      if (gateBtn) { sendGate(); return; }
+      // Clicks inside the gate input should NOT deselect the pinned event.
+      if (e.target.closest('[data-cw-input]')) return;
+      const item = e.target.closest('[data-cw-item]');
+      if (item) {
+        const i = parseInt(item.getAttribute('data-cw-item'), 10);
+        state.selIdx = state.selIdx === i ? null : i;
+        update();
+        return;
+      }
+      const block = e.target.closest('[data-cw-block]');
+      if (block) {
+        const i = parseInt(block.getAttribute('data-cw-block'), 10);
+        state.selIdx = state.selIdx === i ? null : i;
+        update();
+        return;
+      }
+    });
+
+    // Store user-typed prompt as they type, without triggering re-render (preserves cursor).
+    root.addEventListener('input', (e) => {
+      const inp = e.target.closest && e.target.closest('[data-cw-input]');
+      if (!inp) return;
+      const idx = parseInt(inp.getAttribute('data-cw-input'), 10);
+      state.typedTexts[idx] = inp.value;
+    });
+
+    // Enter key in the gate input → send the prompt.
+    root.addEventListener('keydown', (e) => {
+      const inp = e.target.closest && e.target.closest('[data-cw-input]');
+      if (!inp) return;
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        sendGate();
+      }
+    });
+
+    root.addEventListener('mouseover', (e) => {
+      const item = e.target.closest('[data-cw-item]');
+      if (item) { state.hovIdx = parseInt(item.getAttribute('data-cw-item'), 10); update(); return; }
+      const block = e.target.closest('[data-cw-block]');
+      if (block) { state.hovIdx = parseInt(block.getAttribute('data-cw-block'), 10); update(); return; }
+      const leg = e.target.closest('[data-cw-legend]');
+      if (leg) { state.hovCat = leg.getAttribute('data-cw-legend'); update(); return; }
+    });
+
+    root.addEventListener('mouseout', (e) => {
+      const leaving = e.relatedTarget;
+      if (e.target.closest('[data-cw-item]') || e.target.closest('[data-cw-block]')) {
+        if (!leaving || !leaving.closest || (!leaving.closest('[data-cw-item]') && !leaving.closest('[data-cw-block]'))) {
+          state.hovIdx = null; update();
+        }
+      }
+      if (e.target.closest('[data-cw-legend]')) {
+        if (!leaving || !leaving.closest || !leaving.closest('[data-cw-legend]')) {
+          state.hovCat = null; update();
+        }
+      }
+    });
+
+    playBtn.addEventListener('click', togglePlay);
+    fsBtn.addEventListener('click', () => {
+      if (document.fullscreenElement) document.exitFullscreen();
+      else root.requestFullscreen && root.requestFullscreen().catch(() => {});
+    });
+    window._cwFsHandler = () => {
+      state.isFullscreen = !!document.fullscreenElement;
+      fsBtn.textContent = state.isFullscreen ? '⤡' : '⛶';
+    };
+    document.addEventListener('fullscreenchange', window._cwFsHandler);
+
+    // Keyboard: Space
+    window._cwKeyHandler = (e) => {
+      if (!root.isConnected) return;
+      const tag = e.target.tagName;
+      if (tag === 'INPUT' || tag === 'BUTTON' || tag === 'TEXTAREA' || tag === 'SELECT' || e.target.isContentEditable) return;
+      const rect = root.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0) return;
+      if (rect.bottom < 0 || rect.top > window.innerHeight) return;
+      if (e.code === 'Space') {
+        if (!state.hasInteracted) return;
+        e.preventDefault();
+        togglePlay();
+      }
+    };
+    window.addEventListener('keydown', window._cwKeyHandler);
+
+    update();
   }
 
   // ── Category overview page ──
