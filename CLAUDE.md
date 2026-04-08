@@ -66,9 +66,10 @@ Execute in order when a version bump is requested:
 2. **Semver bump** — update package.json + .claude-plugin/marketplace.json simultaneously
 3. **CHANGELOG.md** — add new version section with changes
 4. **SPEC.md** / **GUIDE.md** — sync if structure or features changed
-5. **Commit & push** — commit message format: `vX.Y.Z: {summary}`
-6. **Git tag** — create `git tag vX.Y.Z` and push
-7. **npm publish** — prompt user for OTP
+5. **In-app Help page** — if new pages, features, or concepts were added, update the `#help` page content in `templates/app.js` → `renderHelp()` and add/adjust the matching locale keys in `templates/locales/{en,ko}.json` so in-dashboard documentation stays current
+6. **Commit & push** — commit message format: `vX.Y.Z: {summary}`
+7. **Git tag** — create `git tag vX.Y.Z` and push
+8. **npm publish** — prompt user for OTP
 
 ## Code Conventions
 
