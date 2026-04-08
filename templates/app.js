@@ -107,6 +107,11 @@
   let searchQuery = '';
   let tokenBudget = JSON.parse(localStorage.getItem('harness-budget') || 'null');
   let currentSessionId = null;
+  let pendingContextSid = null;
+  // Sub-path for the context explorer page ('' | 'session' | '<sessionId>').
+  // Lifted to module scope so getHash() / pushState() see it and don't overwrite
+  // the URL on the initial render.
+  let contextSubPath = '';
   let compareMode = localStorage.getItem('harness-compare') === 'true';
 
   // ── DOM refs ──
@@ -258,6 +263,9 @@
     if (currentView === 'session' && currentSessionId) {
       return '#session/' + encodeURIComponent(currentSessionId);
     }
+    if (currentView === 'context' && contextSubPath) {
+      return '#context/' + encodeURIComponent(contextSubPath);
+    }
     if (currentDetail) {
       return '#' + currentDetail.category + '/' + encodeURIComponent(currentDetail.name);
     }
@@ -279,6 +287,15 @@
     if (!hash) return;
     let parts = hash.split('/');
     let view = parts[0];
+    if (view === 'context') {
+      currentView = 'context';
+      currentDetail = null;
+      pendingContextSid = parts.length > 1 ? decodeURIComponent(parts.slice(1).join('/')) : null;
+      contextSubPath = pendingContextSid || '';
+      return;
+    }
+    // Any other view → reset context sub-path so returning to #context doesn't stick
+    if (view !== 'context') contextSubPath = '';
     if (parts.length > 1) {
       let name = decodeURIComponent(parts.slice(1).join('/'));
       currentView = view;
@@ -3318,7 +3335,8 @@
   // Ported from https://code.claude.com/docs/en/context-window (interactive simulation).
   // Single source of truth for events/gates/meta; renders via innerHTML and updates via closure state.
   function renderContextExplorer() {
-    const MAX = 200000;
+    const MAX = 200000;        // standard Claude Code context window
+    const BIG_MAX = 1000000;   // 1M-context models (Opus/Sonnet 4.6 [1m])
     const STARTUP_END = 0.2;
 
     // Pull real environment stats (from computeContextStats in the build script).
@@ -3328,7 +3346,7 @@
 
     // Each event has an `id` used to look up `cwe_ev{id}_label`, `_desc`, and optionally `_tip`.
     // `statKey` points to a field in `stats` that overrides `tokens` (or `subTokens` for sub events).
-    const EVENTS = [
+    const EXAMPLE_EVENTS = [
       { id: 1,  t: 0.015, kind: 'auto',   tokens: 4200, color: '#6B6964', vis: 'hidden', link: null },
       { id: 2,  t: 0.035, kind: 'auto',   tokens: 680,  color: '#E8A45C', vis: 'hidden', statKey: 'autoMemoryTokens',  link: 'https://code.claude.com/docs/en/memory#auto-memory' },
       { id: 3,  t: 0.06,  kind: 'auto',   tokens: 280,  color: '#6B6964', vis: 'hidden', link: null },
@@ -3367,7 +3385,7 @@
       { id: 36, t: 0.93,  kind: 'compact',tokens: 0,   color: '#D97757', vis: 'brief',   link: 'https://code.claude.com/docs/en/how-claude-code-works#the-context-window' }
     ];
 
-    const GATES = [
+    const EXAMPLE_GATES = [
       { at: 0.18,  kind: 'prompt',  gateKey: 'cwe_gate1', resumeTo: 0.22 },
       { at: 0.705, kind: 'prompt',  gateKey: 'cwe_gate2', resumeTo: 0.72 },
       { at: 0.865, kind: 'bang',    gateKey: 'cwe_gate3', resumeTo: 0.875 },
@@ -3381,7 +3399,12 @@
       claude:  { badgeKey: 'cwe_kindClaude',  detailKey: 'cwe_kindClaudeDetail',  badgeBg: 'rgba(217,119,87,0.12)',badgeColor: '#D97757' },
       hook:    { badgeKey: 'cwe_kindHook',    detailKey: 'cwe_kindHookDetail',    badgeBg: 'rgba(184,134,11,0.15)',badgeColor: '#CCA020' },
       compact: { badgeKey: 'cwe_kindCompact', detailKey: 'cwe_kindCompactDetail', badgeBg: 'rgba(217,119,87,0.12)',badgeColor: '#D97757' },
-      sub:     { badgeKey: 'cwe_kindSub',     detailKey: 'cwe_kindSubDetail',     badgeBg: 'rgba(155,123,196,0.12)',badgeColor: '#9B7BC4' }
+      sub:     { badgeKey: 'cwe_kindSub',     detailKey: 'cwe_kindSubDetail',     badgeBg: 'rgba(155,123,196,0.12)',badgeColor: '#9B7BC4' },
+      // Session-mode kinds — distinct badges so skill/mcp/tool/agent aren't mislabeled as "claude".
+      skill:   { badgeKey: 'cwe_kindSkill',   detailKey: 'cwe_kindSkillDetail',   badgeBg: 'rgba(212,168,67,0.15)', badgeColor: '#B8890B' },
+      mcp:     { badgeKey: 'cwe_kindMcp',     detailKey: 'cwe_kindMcpDetail',     badgeBg: 'rgba(155,123,196,0.12)',badgeColor: '#9B7BC4' },
+      agent:   { badgeKey: 'cwe_kindAgent',   detailKey: 'cwe_kindAgentDetail',   badgeBg: 'rgba(155,123,196,0.12)',badgeColor: '#9B7BC4' },
+      tool:    { badgeKey: 'cwe_kindTool',    detailKey: 'cwe_kindToolDetail',    badgeBg: 'rgba(138,136,128,0.15)',badgeColor: '#6E6C64' }
     };
 
     const VIS_META = {
@@ -3399,20 +3422,33 @@
       { c: '#B8860B', labelKey: 'cwe_legHooks' }
     ];
 
-    // Helpers: fetch localized label/desc/tip, overridden by user-typed text when the
-    // event corresponds to a gate the user has already sent.
-    function typedFor(eventId) {
-      const gateIdx = GATE_EVENT_ID.indexOf(eventId);
-      if (gateIdx < 0) return null;
-      const v = state.typedTexts[gateIdx];
-      return (v != null && v.length > 0) ? v : null;
+    // Helpers: fetch localized label/desc/tip for example events.
+    function shortModel(m) {
+      if (!m) return '';
+      return m.replace(/^claude-/, '').replace(/-\d{8,}$/, '');
     }
-    const evtLabel = (e) => typedFor(e.id) || t('cwe_ev' + e.id + '_label');
-    const evtDesc  = (e) => {
-      const typed = typedFor(e.id);
-      return typed ? '"' + typed + '"' : t('cwe_ev' + e.id + '_desc');
+    function fmtClock(ts) {
+      if (!ts) return '';
+      const d = new Date(ts);
+      const pad = (n) => (n < 10 ? '0' + n : '' + n);
+      return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+    }
+    const evtLabel = (e) => {
+      if (e.isSession) {
+        if (e.kind === 'compact') return t('cwe_compactionDetected');
+        if (e.kind === 'user') return t('cwe_sessionUserTurn');
+        return e.contextName || 'turn';
+      }
+      return t('cwe_ev' + e.id + '_label');
     };
-    const evtTip   = (e) => e.hasTip ? t('cwe_ev' + e.id + '_tip') : null;
+    const evtDesc  = (e) => {
+      if (e.isSession) {
+        if (e.kind === 'compact') return t('cwe_compactionDesc');
+        return t('cwe_sessionEvtDesc', shortModel(e.model), fmtClock(e.timestamp), fmt(e.cumulative));
+      }
+      return t('cwe_ev' + e.id + '_desc');
+    };
+    const evtTip   = (e) => (!e.isSession && e.hasTip) ? t('cwe_ev' + e.id + '_tip') : null;
     function resolveStat(statKey) {
       if (!statKey) return null;
       if (statKey === 'mcpPlusSkills') {
@@ -3422,29 +3458,10 @@
       }
       return stats[statKey] != null ? stats[statKey] : null;
     }
-    // Rough client-side token estimator used for user-typed prompts.
-    // Matches the build-script heuristic: ASCII ~4 chars/token, non-ASCII ~1.8.
-    function cwEstimateTokens(text) {
-      if (!text) return 0;
-      let n = 0;
-      for (let i = 0; i < text.length; i++) {
-        const code = text.charCodeAt(i);
-        if (code >= 128) { n += 0.65; }
-        else if ((code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code === 32 || code === 10 || code === 9) { n += 0.25; }
-        else { n += 0.5; }
-      }
-      return Math.max(1, Math.round(n));
-    }
-    // Returns final tokens used for an event (typed text → estimated, stat → real, else default).
+    // Returns final tokens used for an event (stat → real, else default).
     function evtTokens(e) {
+      if (e.isSession) return e.tokens || 0;
       if (e.subStat) return e.tokens; // sub events override subTokens instead
-      // Only user prompts (events 8, 23) get their token count estimated from typed text.
-      // Command gates (34–36) keep their illustrative values because the original tokens represent
-      // command + rendered output, not just the command string.
-      if (e.id === 8 || e.id === 23) {
-        const typed = typedFor(e.id);
-        if (typed) return cwEstimateTokens(typed);
-      }
       const real = resolveStat(e.statKey);
       return real != null ? real : e.tokens;
     }
@@ -3454,33 +3471,157 @@
       return real != null ? real : (e.subTokens || 0);
     }
 
-    const fmt = (n) => n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'K' : n + '';
+    // Build the list of "sessions that can be replayed" — sessions with at least 2 token
+    // entries so there is a meaningful timeline. Each entry carries a short preview
+    // of the first user prompt so the dropdown is recognizable, not just a hash.
+    function listReplayableSessions() {
+      const usage = getUsage();
+      const entries = (usage && usage.tokenEntries) || [];
+      const prompts = (usage && usage.promptStats) || [];
+      const map = {};
+      entries.forEach((e) => {
+        const sid = e.sessionId;
+        if (!sid) return;
+        if (!map[sid]) map[sid] = { id: sid, count: 0, minTs: Infinity, maxTs: 0, firstPrompt: null };
+        const s = map[sid];
+        s.count += 1;
+        const ts = typeof e.timestamp === 'number' ? e.timestamp : new Date(e.timestamp).getTime();
+        if (ts < s.minTs) s.minTs = ts;
+        if (ts > s.maxTs) s.maxTs = ts;
+      });
+      // Pull the earliest promptStats text for each session (if the parser captured it).
+      prompts.forEach((p) => {
+        if (!p.sessionId || !map[p.sessionId]) return;
+        const ts = typeof p.timestamp === 'number' ? p.timestamp : new Date(p.timestamp).getTime();
+        const cur = map[p.sessionId].firstPrompt;
+        if (!cur || ts < cur.ts) {
+          map[p.sessionId].firstPrompt = { ts: ts, text: p.text || p.preview || null, len: p.charLen || 0 };
+        }
+      });
+      return Object.values(map).filter((s) => s.count >= 2).sort((a, b) => b.maxTs - a.maxTs);
+    }
+
+    // Map a usage-entry context to a (kind, color) pair for timeline rendering.
+    // Each context type gets its own `kind` so KIND_META can show a distinct badge.
+    function mapSessionCtx(ctx, ctxName) {
+      // Color palette matches LEGEND entries.
+      const TOOL_COLORS = {
+        Read:   '#8A8880', Grep:   '#8A8880', Glob:   '#8A8880',
+        Write:  '#D97757', Edit:   '#D97757', MultiEdit: '#D97757',
+        Bash:   '#A09E96', WebFetch: '#A09E96', WebSearch: '#A09E96',
+        TodoWrite: '#A09E96', NotebookEdit: '#D97757'
+      };
+      switch (ctx) {
+        case 'skill': return { kind: 'skill', color: '#D4A843' };
+        case 'mcp':   return { kind: 'mcp',   color: '#9B7BC4' };
+        case 'agent': return { kind: 'agent', color: '#9B7BC4' };
+        case 'tool':  return { kind: 'tool',  color: TOOL_COLORS[ctxName] || '#8A8880' };
+        default:      return { kind: 'claude', color: '#D97757' }; // general / conversation
+      }
+    }
+
+    // Build a timeline of events from a real session's tokenEntries.
+    // Each API turn in the conversation becomes one event whose `_tokens` is the
+    // delta since the previous entry and whose `cumulative` is the raw inputTokens
+    // at that point (i.e. the true context window size seen by the model).
+    function buildSessionEvents(sessionId) {
+      const usage = getUsage();
+      const entries = ((usage && usage.tokenEntries) || [])
+        .filter((e) => e.sessionId === sessionId)
+        .map((e) => Object.assign({}, e, {
+          _ts: typeof e.timestamp === 'number' ? e.timestamp : new Date(e.timestamp).getTime()
+        }))
+        .sort((a, b) => a._ts - b._ts);
+      if (entries.length === 0) return [];
+
+      const promptStats = ((usage && usage.promptStats) || [])
+        .filter((p) => p.sessionId === sessionId)
+        .map((p) => typeof p.timestamp === 'number' ? p.timestamp : new Date(p.timestamp).getTime());
+
+      const minTs = entries[0]._ts;
+      const maxTs = entries[entries.length - 1]._ts;
+      const span = Math.max(1, maxTs - minTs);
+
+      const out = [];
+      let prevInput = 0;
+      entries.forEach((e, i) => {
+        const cumulative = e.inputTokens || 0;
+        let delta = cumulative - prevInput;
+        // Large negative delta while the model stays the same → /compact detected.
+        const isCompact = i > 0 && delta < -Math.max(1000, prevInput * 0.2);
+        const nearUserPrompt = promptStats.some((pts) => Math.abs(pts - e._ts) <= 2000);
+        let kind, color;
+        if (isCompact) {
+          kind = 'compact'; color = '#D97757';
+        } else if (nearUserPrompt) {
+          kind = 'user'; color = '#558A42';
+        } else {
+          const m = mapSessionCtx(e.context, e.contextName);
+          kind = m.kind; color = m.color;
+        }
+        // For compaction, delta is negative — store 0 as display tokens but keep raw cumulative.
+        const displayTokens = Math.max(0, delta);
+        out.push({
+          isSession: true,
+          id: -(i + 1), // negative ids avoid collision with EXAMPLE_EVENTS i18n keys
+          t: (e._ts - minTs) / span,
+          kind: kind,
+          tokens: displayTokens,
+          color: color,
+          vis: kind === 'user' ? 'full' : 'brief',
+          link: null,
+          cumulative: cumulative,
+          delta: delta,
+          model: e.model,
+          timestamp: e._ts,
+          contextName: e.contextName || (e.context === 'general' ? 'conversation' : e.context),
+          rawInput: e.rawInput || 0,
+          cacheRead: e.cacheRead || 0,
+          cacheCreation: e.cacheCreation || 0,
+          outputTokens: e.outputTokens || 0
+        });
+        prevInput = cumulative;
+      });
+      return out;
+    }
+
+    const fmt = (n) => {
+      if (n >= 1000000) return (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+      if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
+      return n + '';
+    };
     const renderCode = (s) => {
       if (!s) return '';
       return escapeHtml(s).split('`').map((p, i) => i % 2 === 1
         ? '<code class="cw-code">' + p + '</code>' : p).join('');
     };
 
-    // Maps a gate index (position in GATES) to the event id it corresponds to.
-    // When the user types in a gate's input, the linked event's label/desc show the typed text.
-    const GATE_EVENT_ID = [8, 23, 34, 35, 36];
-
     // ── State ──
     const state = {
       time: 0, playing: false, hovIdx: null, selIdx: null, hovCat: null,
       gatesPassed: 0, hasInteracted: false, isFullscreen: false, rafId: null, lastTs: null,
-      // User-typed prompt per gate index. Undefined until the user has seen that gate.
-      typedTexts: {},
-      // Auto-focus the gate input the first time a new gate appears.
-      gateFocusWanted: false,
-      // When true, gates with saved typedTexts auto-advance after a brief pause.
-      replayMode: false
+      // 'example' = fixed scripted scenario · 'session' = real session replay.
+      mode: 'example',
+      sessionId: null,
+      sessionEvents: [],
+      // Effective context budget — 200K for standard sessions, 1M when the
+      // selected session's peak inputTokens goes beyond 200K (1m-context model).
+      budget: MAX
     };
+
+    // Accessors that return the events/gates for the current mode.
+    // Session mode has no gates (pure replay) and its events are built on demand.
+    function activeEvents() { return state.mode === 'session' ? state.sessionEvents : EXAMPLE_EVENTS; }
+    function activeGates()  { return state.mode === 'session' ? [] : EXAMPLE_GATES; }
 
     // Cancel any previous animation / key handler on re-entry
     if (window._cwRafId) { cancelAnimationFrame(window._cwRafId); window._cwRafId = null; }
     if (window._cwKeyHandler) { window.removeEventListener('keydown', window._cwKeyHandler); window._cwKeyHandler = null; }
     if (window._cwFsHandler) { document.removeEventListener('fullscreenchange', window._cwFsHandler); window._cwFsHandler = null; }
+    if (window._cwFloatTip && window._cwFloatTip.parentNode) {
+      window._cwFloatTip.parentNode.removeChild(window._cwFloatTip);
+      window._cwFloatTip = null;
+    }
 
     // ── Render shell (static structure + styles) ──
     content.innerHTML = ''
@@ -3497,6 +3638,7 @@
       + '  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;'
       + '  color: var(--cw-text); border: 1px solid var(--cw-border);'
       + '  display: flex; flex-direction: column;'
+      + '  height: calc(100vh - 64px); min-height: 850px;'
       + '}'
       + 'body.dark .cw-root {'
       + '  --cw-bg: #111110; --cw-text: #E8E6DC; --cw-text-2: #B8B6AE; --cw-text-3: #9C9A92;'
@@ -3517,6 +3659,21 @@
       + '.cw-mobile-fallback { display: none; padding: 14px 16px; border-radius: 8px; font-size: 14px; border: 1px solid var(--cw-border); background: var(--cw-surface); color: var(--text); }'
       + '@media (max-width: 700px) { .cw-root { display: none !important; } .cw-mobile-fallback { display: block; } }'
       + '.cw-root a { color: #D97757; }'
+      + '.cw-tip { position: relative; }'
+      + '.cw-tip::after {'
+      + '  content: attr(data-tip); position: absolute; top: calc(100% + 6px); left: 50%;'
+      + '  transform: translateX(-50%); width: max-content; max-width: 320px;'
+      + '  padding: 8px 11px; border-radius: 6px;'
+      + '  background: rgba(30,28,24,0.95); color: #F5F3EC;'
+      + '  font-size: 11px; font-weight: 400; line-height: 1.5;'
+      + '  white-space: pre-wrap; text-align: left;'
+      + '  pointer-events: none; opacity: 0; transform-origin: top center;'
+      + '  transition: opacity 0.15s ease 0.25s; z-index: 50;'
+      + '  box-shadow: 0 6px 18px rgba(0,0,0,0.18);'
+      + '}'
+      + '.cw-tip-right::after { left: auto; right: 0; transform: none; }'
+      + '.cw-tip:hover::after, .cw-tip:focus-visible::after { opacity: 1; }'
+      + 'body.dark .cw-tip::after { background: rgba(240,238,230,0.95); color: #1A1918; }'
       + '</style>'
       + '<div class="cw-mobile-fallback">' + escapeHtml(t('cwe_mobileFallback')) + '</div>'
       + '<div class="cw-root" id="cw-root" tabindex="-1">'
@@ -3527,8 +3684,28 @@
       +     '</div>'
       +     '<div style="text-align:right;flex-shrink:0">'
       +       '<div id="cw-tokens-display" style="font-family:var(--cw-font-mono);font-size:20px;font-weight:600;letter-spacing:-0.5px;line-height:1"></div>'
-      +       '<div style="font-family:var(--cw-font-mono);font-size:13px;color:var(--cw-text-dim);margin-top:2px" title="' + escapeHtml(t('cwe_illustrativeTooltip')) + '">/ ' + fmt(MAX) + ' · ' + escapeHtml(t('cwe_illustrative')) + '</div>'
+      +       '<div style="font-family:var(--cw-font-mono);font-size:13px;color:var(--cw-text-dim);margin-top:2px;display:flex;align-items:center;justify-content:flex-end;gap:5px">'
+      +         '<span id="cw-tokens-sub">/ ' + fmt(MAX) + ' · ' + escapeHtml(t('cwe_illustrative')) + '</span>'
+      +         '<span id="cw-budget-help" class="cw-tip cw-tip-right" data-tip="" style="display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;background:var(--cw-track);color:var(--cw-text-dim);font-size:10px;font-weight:700;cursor:help;user-select:none;line-height:1">?</span>'
+      +       '</div>'
       +     '</div>'
+      +   '</div>'
+      +   '<div style="padding:0 20px 8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
+      +     '<div role="tablist" style="display:inline-flex;gap:2px;padding:2px;background:var(--cw-track);border-radius:7px">'
+      +       '<button data-cw-mode="example" class="cw-mode-btn" style="padding:5px 12px;border-radius:5px;border:none;background:transparent;color:var(--cw-text-2);font-size:12px;font-weight:600;cursor:pointer">' + escapeHtml(t('cwe_modeExample')) + '</button>'
+      +       '<button data-cw-mode="session" class="cw-mode-btn" style="padding:5px 12px;border-radius:5px;border:none;background:transparent;color:var(--cw-text-2);font-size:12px;font-weight:600;cursor:pointer">' + escapeHtml(t('cwe_modeSession')) + '</button>'
+      +     '</div>'
+      +     '<div id="cw-session-tools" style="display:none;align-items:center;gap:8px;flex-wrap:wrap;position:relative">'
+      +       '<div style="position:relative">'
+      +         '<input id="cw-session-input" type="text" autocomplete="off" spellcheck="false" placeholder="' + escapeHtml(t('cwe_searchHint')) + '" style="width:340px;padding:6px 10px;border-radius:5px;border:1px solid var(--cw-border);background:var(--cw-surface);color:var(--cw-text-2);font-size:12px;font-family:var(--cw-font-mono);outline:none" />'
+      +         '<div id="cw-session-list" style="display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:20;width:520px;max-height:360px;overflow-y:auto;background:var(--cw-bg);border:1px solid var(--cw-border);border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,0.12)" class="cw-scroll"></div>'
+      +       '</div>'
+      +       '<div role="group" style="display:inline-flex;gap:2px;padding:2px;background:var(--cw-track);border-radius:6px">'
+      +         '<button data-cw-sort="recent" class="cw-sort-btn" style="padding:4px 10px;border-radius:4px;border:none;background:transparent;color:var(--cw-text-2);font-size:11px;font-weight:600;cursor:pointer">' + escapeHtml(t('cwe_sortRecent')) + '</button>'
+      +         '<button data-cw-sort="turns" class="cw-sort-btn cw-tip" data-tip="' + escapeHtml(t('cwe_turnsHelp')) + '" style="padding:4px 10px;border-radius:4px;border:none;background:transparent;color:var(--cw-text-2);font-size:11px;font-weight:600;cursor:pointer">' + escapeHtml(t('cwe_sortTurns')) + '</button>'
+      +       '</div>'
+      +     '</div>'
+      +     '<span id="cw-session-empty" style="display:none;font-size:12px;color:var(--cw-text-faint)">' + escapeHtml(t('cwe_noSessions')) + '</span>'
       +   '</div>'
       +   '<div style="padding:0 20px">'
       +     '<div style="height:4px;border-radius:2px;background:var(--cw-track);overflow:hidden;margin-bottom:6px">'
@@ -3543,14 +3720,15 @@
       +       '</div>'
       +     '</div>'
       +   '</div>'
-      +   '<div id="cw-main" style="display:flex;padding:14px 20px 0;gap:16px;height:420px;flex:1;min-height:0">'
+      +   '<div id="cw-main" style="display:flex;padding:14px 20px 0;gap:16px;flex:1;min-height:0">'
       +     '<div id="cw-timeline" class="cw-scroll" style="flex:1;min-width:0;overflow-y:auto;padding-right:8px;scroll-behavior:smooth"></div>'
       +     '<div style="width:300px;flex-shrink:0;display:flex;flex-direction:column">'
       +       '<div id="cw-detail" class="cw-scroll" style="padding:14px 16px;border-radius:10px;background:var(--cw-surface);border:1px solid var(--cw-border);flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:10px"></div>'
       +     '</div>'
       +   '</div>'
-      +   '<div style="padding:10px 20px 14px;display:flex;align-items:center;gap:10px">'
+      +   '<div style="padding:10px 20px 16px;display:flex;align-items:center;gap:10px">'
       +     '<button id="cw-play" aria-label="Play" style="width:30px;height:30px;border-radius:6px;border:none;background:rgba(217,119,87,0.1);color:#D97757;cursor:pointer;font-size:15px;font-weight:700;display:flex;align-items:center;justify-content:center">▶</button>'
+      +     '<button id="cw-skip" title="' + escapeHtml(t('cwe_skipToEnd')) + '" style="width:28px;height:28px;border-radius:6px;border:1px solid var(--cw-border);background:var(--cw-surface);color:var(--cw-text-dim);cursor:pointer;font-size:13px;flex-shrink:0;display:flex;align-items:center;justify-content:center">⏭</button>'
       +     '<div style="flex:1;height:3px;border-radius:2px;background:var(--cw-track);overflow:hidden">'
       +       '<div id="cw-progress-bottom" style="width:0%;height:100%;background:#D97757;transition:width 0.1s linear"></div>'
       +     '</div>'
@@ -3562,6 +3740,8 @@
 
     const root = document.getElementById('cw-root');
     const tokensDisplay = document.getElementById('cw-tokens-display');
+    const tokensSub = document.getElementById('cw-tokens-sub');
+    const budgetHelp = document.getElementById('cw-budget-help');
     const progressTop = document.getElementById('cw-progress-top');
     const barEl = document.getElementById('cw-bar');
     const legendEl = document.getElementById('cw-legend');
@@ -3571,22 +3751,77 @@
     const progressBottom = document.getElementById('cw-progress-bottom');
     const percentEl = document.getElementById('cw-percent');
     const fsBtn = document.getElementById('cw-fs');
+    const mainEl = document.getElementById('cw-main');
+    const sessionTools = document.getElementById('cw-session-tools');
+    const sessionInput = document.getElementById('cw-session-input');
+    const sessionList = document.getElementById('cw-session-list');
+    const sessionEmpty = document.getElementById('cw-session-empty');
+    const modeBtns = Array.from(root.querySelectorAll('[data-cw-mode]'));
+    const sortBtns = Array.from(root.querySelectorAll('[data-cw-sort]'));
+    const bottomBar = root.children[root.children.length - 1]; // the playback control row
 
     // Render legend once
     legendEl.innerHTML = LEGEND.map((x) => {
-      return '<div class="cw-legend-item" data-cw-legend="' + x.c + '" '
+      return '<div class="cw-legend-item" data-cw-legend="' + x.c + '" data-cw-pct="' + x.c + '" data-cw-label="' + escapeHtml(t(x.labelKey)) + '" data-tip="" '
         + 'style="display:flex;align-items:center;gap:4px;padding:2px 6px;border-radius:4px;cursor:pointer;transition:background 0.1s">'
         + '<div style="width:6px;height:6px;border-radius:1.5px;background:' + x.c + ';opacity:0.7"></div>'
         + '<span style="font-size:12px;color:var(--cw-text-dim)">' + escapeHtml(t(x.labelKey)) + '</span>'
         + '</div>';
     }).join('');
 
+    // Floating tooltip for the legend — attached to body so it escapes the
+    // .cw-root overflow:hidden clipping. Position is computed on hover and
+    // clamped to the viewport so leftmost/rightmost items never get cut off.
+    if (window._cwFloatTip && window._cwFloatTip.parentNode) {
+      window._cwFloatTip.parentNode.removeChild(window._cwFloatTip);
+    }
+    const floatTip = document.createElement('div');
+    floatTip.style.cssText = 'position:fixed; pointer-events:none; opacity:0;'
+      + ' z-index:10000; padding:7px 10px; border-radius:6px;'
+      + ' background:rgba(30,28,24,0.95); color:#F5F3EC;'
+      + ' font-size:11px; font-weight:400; line-height:1.45;'
+      + ' max-width:300px; white-space:normal; text-align:left;'
+      + ' box-shadow:0 6px 18px rgba(0,0,0,0.18);'
+      + ' transition:opacity 0.15s ease;';
+    if (document.body.classList.contains('dark')) {
+      floatTip.style.background = 'rgba(240,238,230,0.95)';
+      floatTip.style.color = '#1A1918';
+    }
+    document.body.appendChild(floatTip);
+    window._cwFloatTip = floatTip;
+
+    function showFloatTipFor(el) {
+      const txt = el.getAttribute('data-tip') || '';
+      if (!txt) return;
+      floatTip.textContent = txt;
+      // First set approximate position so we can measure, then clamp.
+      const rect = el.getBoundingClientRect();
+      floatTip.style.left = '0px';
+      floatTip.style.top = (rect.bottom + 6) + 'px';
+      floatTip.style.opacity = '1';
+      const tipRect = floatTip.getBoundingClientRect();
+      let left = rect.left + rect.width / 2 - tipRect.width / 2;
+      const margin = 8;
+      if (left < margin) left = margin;
+      if (left + tipRect.width > window.innerWidth - margin) {
+        left = window.innerWidth - margin - tipRect.width;
+      }
+      floatTip.style.left = left + 'px';
+    }
+    function hideFloatTip() { floatTip.style.opacity = '0'; }
+
     // ── Helpers ──
     function computeView() {
-      const visibleCount = EVENTS.filter((e) => e.t <= state.time).length;
-      const preCompactVisible = EVENTS.slice(0, visibleCount);
-      const compactGateIdx = GATES.length - 1;
-      const isCompacted = state.gatesPassed > compactGateIdx && preCompactVisible.some((e) => e.kind === 'compact');
+      const events = activeEvents();
+      const gates = activeGates();
+      const visibleCount = events.filter((e) => e.t <= state.time).length;
+      const preCompactVisible = events.slice(0, visibleCount);
+      const compactGateIdx = gates.length - 1;
+      // Session mode replays real history — there is no scripted compact gate,
+      // compactions manifest as naturally shrinking `cumulative` values.
+      const isCompacted = state.mode !== 'session'
+        && state.gatesPassed > compactGateIdx
+        && preCompactVisible.some((e) => e.kind === 'compact');
 
       let visible, preCompactTotal = 0;
       if (!isCompacted) {
@@ -3609,14 +3844,25 @@
       const blocks = visible.map((e, visIdx) => {
         return Object.assign({}, e, { _tokens: evtTokens(e), visIdx: visIdx });
       }).filter((e) => e._tokens > 0 || e.isSummary);
-      const totalTokens = blocks.reduce((s, b) => s + b._tokens, 0);
+      let totalTokens = blocks.reduce((s, b) => s + b._tokens, 0);
+      // Session mode: show the peak context size reached so far (max cumulative
+      // across all visible entries). Using "last entry" would under-report after a
+      // mid-session compaction; peak is what actually sized the model's buffer.
+      if (state.mode === 'session' && visible.length > 0) {
+        let peak = 0;
+        for (let i = 0; i < visible.length; i++) {
+          const c = visible[i].cumulative || 0;
+          if (c > peak) peak = c;
+        }
+        totalTokens = peak;
+      }
       const subTotal = visible.filter((e) => e.kind === 'sub').reduce((s, e) => s + evtSubTokens(e), 0);
 
       return { visible: visible, blocks: blocks, totalTokens: totalTokens, subTotal: subTotal, isCompacted: isCompacted, preCompactTotal: preCompactTotal };
     }
 
     function activeGateNow() {
-      return GATES.find((g, i) => i >= state.gatesPassed && state.time >= g.at && state.time < g.resumeTo) || null;
+      return activeGates().find((g, i) => i >= state.gatesPassed && state.time >= g.at && state.time < g.resumeTo) || null;
     }
 
     function getTakeaway(focusT, isCompacted) {
@@ -3647,8 +3893,22 @@
     // ── Render sub-regions ──
     function renderBarSegments(view) {
       const activeIdx = state.selIdx !== null ? state.selIdx : state.hovIdx;
+      // Session mode: scale each block proportionally so the bar's total width
+      // equals peakCumulative/budget — matching the header number. Without this,
+      // the bar sums deltas (smaller than peak when cache reuse dominates) and
+      // the user sees a mismatch between the header and the bar fill level.
+      let sessionScale = 1;
+      if (state.mode === 'session' && view.blocks.length > 0) {
+        const sumDeltas = view.blocks.reduce((s, b) => s + b._tokens, 0);
+        if (sumDeltas > 0) sessionScale = view.totalTokens / sumDeltas;
+      }
       const html = view.blocks.map((b, i) => {
-        const w = Math.max(b._tokens / MAX * 100, 0.15);
+        // Example mode has only ~36 blocks, so a 0.15% minimum keeps tiny events
+        // visible without distorting totals. Session mode often has 500+ blocks —
+        // the min-width would compound into a massively inflated bar, so drop it.
+        const w = state.mode === 'session'
+          ? (b._tokens / state.budget * 100) * sessionScale
+          : Math.max(b._tokens / state.budget * 100, 0.15);
         const isHov = b.visIdx === activeIdx;
         const catMatch = state.hovCat && b.color === state.hovCat;
         const dimmed = state.hovCat ? !catMatch : (activeIdx !== null && !isHov);
@@ -3664,7 +3924,15 @@
       const { visible, subTotal, isCompacted, preCompactTotal, totalTokens } = view;
       let html = '';
 
-      if (visible.length === 0 && !state.playing) {
+      // Session mode with no selection yet → prompt the user to pick one.
+      if (state.mode === 'session' && state.sessionEvents.length === 0) {
+        html += '<div style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--cw-text-faint)">'
+          + '<div style="font-size:28px;opacity:0.3">⌕</div>'
+          + '<div style="font-size:14px;font-weight:500">' + escapeHtml(t('cwe_pickSessionTitle')) + '</div>'
+          + '<div style="font-size:12px;max-width:320px;text-align:center;line-height:1.5">' + escapeHtml(t('cwe_pickSessionHint')) + '</div>'
+          + '</div>';
+      }
+      if (visible.length === 0 && !state.playing && state.mode !== 'session') {
         html += '<div style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px">'
           + '<div style="font-family:var(--cw-font-mono);font-size:16px;color:var(--cw-text-dim);display:flex;align-items:center;gap:8px">'
           +   '<span style="color:var(--cw-text-faint)">$</span><span>claude</span>'
@@ -3689,13 +3957,18 @@
           + '</div>';
       }
 
-      if (state.time > 0 && visible.length > 0) {
+      if (state.mode !== 'session' && state.time > 0 && visible.length > 0) {
         html += '<div style="font-size:12px;font-weight:700;color:var(--cw-text-faint);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:6px;padding-left:28px">'
           + escapeHtml(isCompacted ? t('cwe_reloadedAfterCompact') : t('cwe_beforeYouType'))
           + '</div>';
       }
+      if (state.mode === 'session' && visible.length > 0) {
+        html += '<div style="font-size:12px;font-weight:700;color:var(--cw-text-faint);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:6px;padding-left:28px">'
+          + escapeHtml(t('cwe_sessionReplay'))
+          + '</div>';
+      }
 
-      if (state.time > 0) {
+      if (state.time > 0 || state.mode === 'session') {
         visible.forEach((evt, i) => {
           const meta = KIND_META[evt.kind];
           const isHov = state.hovIdx === i;
@@ -3705,9 +3978,11 @@
           const enteringSub = isSub && prevKind !== 'sub';
           const leavingSub = prevKind === 'sub' && !isSub;
           let showPhase = null;
-          if (evt.kind === 'user' && prevKind !== 'user') showPhase = t('cwe_phaseYou');
-          else if (evt.kind === 'claude' && prevKind === 'user') showPhase = t('cwe_phaseClaudeWorks');
-          else if (evt.isSummary) showPhase = t('cwe_phaseSummarized');
+          if (state.mode !== 'session') {
+            if (evt.kind === 'user' && prevKind !== 'user') showPhase = t('cwe_phaseYou');
+            else if (evt.kind === 'claude' && prevKind === 'user') showPhase = t('cwe_phaseClaudeWorks');
+            else if (evt.isSummary) showPhase = t('cwe_phaseSummarized');
+          }
           const isNewRow = isCompacted && !(evt.kind === 'auto' && evt.t < STARTUP_END);
 
           const rowOpen = '<div' + (isNewRow ? ' class="cw-compacted-row" style="animation-delay:' + (i * 60) + 'ms"' : '') + '>';
@@ -3768,7 +4043,8 @@
           if (evt.vis !== 'hidden') {
             const stroke = evt.vis === 'full' ? '#558A42' : 'currentColor';
             const op = evt.vis === 'full' ? 1 : 0.5;
-            html += '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="' + stroke + '" stroke-width="2" style="color:var(--cw-text-faint);opacity:' + op + '"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+            const sw = evt.vis === 'full' ? '3.5' : '3';
+            html += '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="' + stroke + '" stroke-width="' + sw + '" style="color:var(--cw-text-faint);opacity:' + op + '"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
           }
           html += '</span>';
           html += '</div>'; // label container
@@ -3777,29 +4053,26 @@
         });
       }
 
-      // Gate card — editable prompt input. Pre-filled with default, user can replace.
+      // Gate card — displays the fixed scripted prompt for this scenario step.
+      // Text is static (editing was removed; example events use pre-authored labels).
       if (activeGate) {
-        const gateIdx = state.gatesPassed;
-        const currentVal = state.typedTexts[gateIdx] != null ? state.typedTexts[gateIdx] : t(activeGate.gateKey);
-        const placeholder = activeGate.kind === 'prompt' ? t(activeGate.gateKey) : '';
-        const inputAttrs = 'data-cw-input="' + gateIdx + '" type="text" autocomplete="off" spellcheck="false" '
-          + 'value="' + escapeHtml(currentVal) + '"'
-          + (placeholder ? ' placeholder="' + escapeHtml(placeholder) + '"' : '');
+        const gateText = t(activeGate.gateKey);
         const isCompact = activeGate.kind === 'compact';
+        const textSpan = '<span style="flex:1;min-width:0;font:15px var(--cw-font-mono);color:var(--cw-text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(gateText) + '</span>';
 
         if (!isCompact) {
           html += '<div style="padding-left:28px;margin-top:12px;padding-right:8px">'
             + '<div style="font-size:11px;font-weight:600;color:#6BA656;font-family:var(--cw-font-mono);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;padding-left:2px">' + escapeHtml(t('cwe_youTypeHeader')) + '</div>'
             + '<div style="display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:6px;background:rgba(85,138,66,0.06);border:1px solid rgba(85,138,66,0.2)">'
             +   '<span style="color:#558A42;font-size:15px;font-family:var(--cw-font-mono);flex-shrink:0">❯</span>'
-            +   '<input ' + inputAttrs + ' style="flex:1;min-width:0;background:transparent;border:none;outline:none;font:15px var(--cw-font-mono);color:var(--cw-text-2);padding:0;line-height:1.5" />'
+            +   textSpan
             +   '<button data-cw-gate="1" style="padding:5px 12px;border-radius:5px;border:none;background:#558A42;color:#fff;font-size:13px;font-weight:600;cursor:pointer;flex-shrink:0">'
             +     escapeHtml(activeGate.kind === 'prompt' ? t('cwe_sendBtn') : t('cwe_runBtn'))
             +   '</button>'
             + '</div>'
             + '</div>';
         } else {
-          const barColor = (totalTokens / MAX * 100) > 75 ? '#D97757' : (totalTokens / MAX * 100) > 50 ? '#B8860B' : '#558A42';
+          const barColor = (totalTokens / state.budget * 100) > 75 ? '#D97757' : (totalTokens / state.budget * 100) > 50 ? '#B8860B' : '#558A42';
           html += '<div style="padding-left:28px;margin-top:12px;padding-right:8px">'
             + '<div style="padding:12px 14px;border-radius:6px;background:rgba(217,119,87,0.06);border:1px solid rgba(217,119,87,0.25)">'
             +   '<div style="font-size:13px;color:var(--cw-text-3);margin-bottom:8px;line-height:1.5">'
@@ -3808,7 +4081,7 @@
             +   '</div>'
             +   '<div style="display:flex;align-items:center;gap:8px">'
             +     '<span style="color:#D97757;font-size:15px;font-family:var(--cw-font-mono)">❯</span>'
-            +     '<input ' + inputAttrs + ' style="flex:1;min-width:0;background:transparent;border:none;outline:none;font:15px var(--cw-font-mono);color:var(--cw-text-2);padding:0;line-height:1.5" />'
+            +     textSpan
             +     '<button data-cw-gate="1" style="padding:5px 12px;border-radius:5px;border:none;background:#D97757;color:#fff;font-size:13px;font-weight:600;cursor:pointer;flex-shrink:0">' + escapeHtml(t('cwe_runBtn')) + '</button>'
             +   '</div>'
             + '</div>'
@@ -3827,6 +4100,38 @@
       const terminalView = getTerminalView(focusT, view.isCompacted);
 
       let html = '';
+      if (hovEvent && hovEvent.isSession) {
+        const meta = KIND_META[hovEvent.kind];
+        const pctCache = hovEvent.cumulative > 0
+          ? Math.round((hovEvent.cacheRead / hovEvent.cumulative) * 100)
+          : 0;
+        html += '<div>'
+          + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">'
+          +   '<div style="width:10px;height:10px;border-radius:3px;background:' + hovEvent.color + ';opacity:0.8"></div>'
+          +   '<span style="font-size:16px;font-weight:600">' + escapeHtml(evtLabel(hovEvent)) + '</span>'
+          + '</div>'
+          + '<div style="display:flex;width:fit-content;padding:3px 8px;border-radius:4px;margin-bottom:8px;background:' + meta.badgeBg + '">'
+          +   '<span style="font-size:12px;font-weight:600;color:' + meta.badgeColor + '">' + escapeHtml(t(meta.detailKey)) + '</span>'
+          + '</div>'
+          + '<div style="font-size:13px;color:var(--cw-text-dim);font-family:var(--cw-font-mono);margin-bottom:6px">'
+          +   escapeHtml(shortModel(hovEvent.model)) + ' · ' + escapeHtml(fmtClock(hovEvent.timestamp))
+          + '</div>'
+          + '<div style="font-size:14px;font-family:var(--cw-font-mono);color:var(--cw-text-2);margin-bottom:3px">'
+          +   escapeHtml(t('cwe_sessionCumulative')) + ': <strong>' + fmt(hovEvent.cumulative) + '</strong> ' + escapeHtml(t('cwe_tokensWord'))
+          + '</div>'
+          + '<div style="font-size:13px;font-family:var(--cw-font-mono);color:var(--cw-text-dim);margin-bottom:8px">'
+          +   escapeHtml(t('cwe_sessionDelta')) + ': ' + (hovEvent.delta >= 0 ? '+' : '') + fmt(hovEvent.delta)
+          + '</div>'
+          + '<div style="padding:8px 10px;border-radius:6px;background:var(--cw-surface-2);border:1px solid var(--cw-border);font-size:12px;line-height:1.6;color:var(--cw-text-dim);font-family:var(--cw-font-mono)">'
+          +   escapeHtml(t('cwe_sessionCache')) + ': ' + pctCache + '%<br>'
+          +   'raw: ' + fmt(hovEvent.rawInput) + ' · cache R/W: ' + fmt(hovEvent.cacheRead) + ' / ' + fmt(hovEvent.cacheCreation) + '<br>'
+          +   'out: ' + fmt(hovEvent.outputTokens)
+          + '</div>'
+          + '</div>';
+        detailEl.innerHTML = html;
+        detailEl.scrollTop = 0;
+        return;
+      }
       if (hovEvent) {
         const meta = KIND_META[hovEvent.kind];
         const tok = evtTokens(hovEvent);
@@ -3894,15 +4199,17 @@
           + '</div>';
       }
 
-      html += '<div style="padding:10px 12px;border-radius:8px;background:rgba(217,119,87,0.05);border:1px solid rgba(217,119,87,0.12)">'
-        + '<div style="font-size:11px;font-weight:700;color:#D97757;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:3px">' + escapeHtml(t('cwe_keyTakeaway')) + '</div>'
-        + '<div style="font-size:13px;color:var(--cw-text-3);line-height:1.5">' + escapeHtml(takeaway) + '</div>'
-        + '</div>';
+      if (state.mode !== 'session') {
+        html += '<div style="padding:10px 12px;border-radius:8px;background:rgba(217,119,87,0.05);border:1px solid rgba(217,119,87,0.12)">'
+          + '<div style="font-size:11px;font-weight:700;color:#D97757;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:3px">' + escapeHtml(t('cwe_keyTakeaway')) + '</div>'
+          + '<div style="font-size:13px;color:var(--cw-text-3);line-height:1.5">' + escapeHtml(takeaway) + '</div>'
+          + '</div>';
 
-      html += '<div style="padding:10px 12px;border-radius:8px;background:var(--cw-surface-2);border:1px solid var(--cw-border)">'
-        + '<div style="font-size:11px;font-weight:700;color:var(--cw-text-dim);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:3px">' + escapeHtml(t('cwe_terminalView')) + '</div>'
-        + '<div style="font-size:13px;color:var(--cw-text-3);line-height:1.5">' + escapeHtml(terminalView) + '</div>'
-        + '</div>';
+        html += '<div style="padding:10px 12px;border-radius:8px;background:var(--cw-surface-2);border:1px solid var(--cw-border)">'
+          + '<div style="font-size:11px;font-weight:700;color:var(--cw-text-dim);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:3px">' + escapeHtml(t('cwe_terminalView')) + '</div>'
+          + '<div style="font-size:13px;color:var(--cw-text-3);line-height:1.5">' + escapeHtml(terminalView) + '</div>'
+          + '</div>';
+      }
 
       // Mixed data note — shown when we have at least one measured stat
       const hasMeasured = stats && Object.values(stats).some((v) => v != null && v > 0);
@@ -3919,12 +4226,37 @@
 
     function update() {
       const view = computeView();
-      const pct = view.totalTokens / MAX * 100;
+      const pct = view.totalTokens / state.budget * 100;
       const barColor = pct > 75 ? '#D97757' : pct > 50 ? '#B8860B' : '#558A42';
 
       // Header tokens
       tokensDisplay.style.color = barColor;
-      tokensDisplay.innerHTML = '~' + fmt(view.totalTokens) + '<span style="font-size:15px;font-weight:500;margin-left:4px">' + escapeHtml(t('cwe_tokensWord')) + '</span>';
+      const prefix = state.mode === 'session' ? '' : '~';
+      tokensDisplay.innerHTML = prefix + fmt(view.totalTokens) + '<span style="font-size:15px;font-weight:500;margin-left:4px">' + escapeHtml(t('cwe_tokensWord')) + '</span>';
+      // Collect unique real model names for the current session (if any).
+      let modelsStr = '';
+      if (state.mode === 'session' && state.sessionEvents.length > 0) {
+        const seen = {};
+        state.sessionEvents.forEach((e) => {
+          if (!e.model) return;
+          // Skip synthetic markers Claude Code writes for tool-result pseudo-messages.
+          if (e.model.indexOf('<') >= 0 || e.model === 'unknown') return;
+          seen[shortModel(e.model)] = true;
+        });
+        modelsStr = Object.keys(seen).join(', ');
+      }
+      if (tokensSub) {
+        const tag = state.mode === 'session' ? t('cwe_measured') : t('cwe_illustrative');
+        const pctStr = pct >= 10 ? Math.round(pct) + '%' : pct.toFixed(1) + '%';
+        let text = '/ ' + fmt(state.budget) + ' (' + pctStr + ')';
+        if (modelsStr) text += ' · ' + modelsStr;
+        text += ' · ' + tag;
+        tokensSub.textContent = text;
+      }
+      // Budget help tooltip — general explanation only (size + model now inline).
+      if (budgetHelp) {
+        budgetHelp.setAttribute('data-tip', t('cwe_budgetHelp'));
+      }
 
       // Top progress line
       progressTop.style.width = pct + '%';
@@ -3933,43 +4265,30 @@
       // Stacked bar
       renderBarSegments(view);
 
-      // Preserve focus + selection on the gate input across re-renders so typing is smooth.
-      let savedInput = null;
-      const active = document.activeElement;
-      if (active && active.matches && active.matches('[data-cw-input]')) {
-        savedInput = {
-          idx: active.getAttribute('data-cw-input'),
-          start: active.selectionStart,
-          end: active.selectionEnd
-        };
-      }
+      // Legend percentages — shown as a CSS hover tooltip (data-tip attribute).
+      // Denominator is the sum over all visible blocks so percentages sum to ~100%.
+      const catTotals = {};
+      view.blocks.forEach((b) => { catTotals[b.color] = (catTotals[b.color] || 0) + b._tokens; });
+      const catSum = Object.values(catTotals).reduce((s, v) => s + v, 0) || 1;
+      legendEl.querySelectorAll('[data-cw-pct]').forEach((el) => {
+        const c = el.getAttribute('data-cw-pct');
+        const label = el.getAttribute('data-cw-label') || '';
+        const pct = ((catTotals[c] || 0) / catSum) * 100;
+        const pctStr = pct >= 10 ? pct.toFixed(0) : pct.toFixed(1);
+        const tokStr = fmt(catTotals[c] || 0);
+        el.setAttribute('data-tip', label + ': ' + pctStr + '% · ' + tokStr + ' ' + t('cwe_tokensWord'));
+      });
 
       // Timeline + detail
       renderTimeline(view);
       renderDetail(view);
 
-      // Restore focus
       const gate = activeGateNow();
-      if (savedInput) {
-        const inp = timelineEl.querySelector('[data-cw-input="' + savedInput.idx + '"]');
-        if (inp) {
-          inp.focus();
-          try { inp.setSelectionRange(savedInput.start, savedInput.end); } catch (e) { /* ignore */ }
-        }
-      } else if (state.gateFocusWanted && gate) {
-        const inp = timelineEl.querySelector('[data-cw-input]');
-        if (inp) {
-          inp.focus();
-          inp.setSelectionRange(inp.value.length, inp.value.length);
-          state.gateFocusWanted = false;
-        }
-      }
-
-      // Auto-scroll timeline (but not while the user is typing — jumping would be jarring)
+      // Auto-scroll timeline
       if (view.isCompacted) {
         timelineEl.scrollTo({ top: 0, behavior: 'smooth' });
       } else if (state.playing || gate) {
-        if (!savedInput) timelineEl.scrollTop = timelineEl.scrollHeight;
+        timelineEl.scrollTop = timelineEl.scrollHeight;
       }
 
       // Bottom progress
@@ -3992,25 +4311,18 @@
         if (state.lastTs === null) state.lastTs = ts;
         const dt = (ts - state.lastTs) / 1000;
         state.lastTs = ts;
-        const next = state.time + dt * 0.032;
+        // Session mode: slow down for long timelines so each entry is legible
+        // (aim for ~1 entry per second regardless of session length).
+        const speed = state.mode === 'session'
+          ? 0.032 / Math.max(1, Math.min(6, (state.sessionEvents.length || 1) / 36))
+          : 0.032;
+        const next = state.time + dt * speed;
         const prev = state.time;
-        const gate = GATES.find((g, i) => i >= state.gatesPassed && next >= g.at && prev < g.resumeTo);
+        const gates = activeGates();
+        const gate = gates.find((g, i) => i >= state.gatesPassed && next >= g.at && prev < g.resumeTo);
         if (gate) {
           state.time = gate.at;
-          const gateIdx = GATES.indexOf(gate);
-          // In replay mode, auto-advance gates that have saved text.
-          if (state.replayMode && state.typedTexts[gateIdx] != null) {
-            state.gatesPassed += 1;
-            state.time = gate.resumeTo;
-            update();
-            state.lastTs = null; // reset so next frame starts fresh from resumeTo
-            state.rafId = requestAnimationFrame(step);
-            window._cwRafId = state.rafId;
-            return;
-          }
           state.playing = false;
-          state.replayMode = false;
-          state.gateFocusWanted = true;
           update();
           return;
         }
@@ -4033,14 +4345,6 @@
     function sendGate() {
       const gate = activeGateNow();
       if (!gate) return;
-      const gateIdx = state.gatesPassed;
-      // Capture whatever's currently in the input box (user-edited or default).
-      const inp = timelineEl.querySelector('[data-cw-input="' + gateIdx + '"]');
-      if (inp) {
-        state.typedTexts[gateIdx] = inp.value;
-      } else if (state.typedTexts[gateIdx] == null) {
-        state.typedTexts[gateIdx] = t(gate.gateKey);
-      }
       const isCompact = gate.kind === 'compact';
       state.gatesPassed += 1;
       state.time = gate.resumeTo;
@@ -4051,13 +4355,10 @@
 
     function togglePlay() {
       if (state.time >= 1) {
-        // Replay mode: auto-advance through gates that already have typed text.
-        const hasTyped = Object.keys(state.typedTexts).length > 0;
         state.time = 0;
         state.gatesPassed = 0;
         state.selIdx = null;
         state.hovIdx = null;
-        state.replayMode = hasTyped;
         startAnim();
         return;
       }
@@ -4072,8 +4373,6 @@
       if (startBtn) { startAnim(); return; }
       const gateBtn = e.target.closest('[data-cw-gate]');
       if (gateBtn) { sendGate(); return; }
-      // Clicks inside the gate input should NOT deselect the pinned event.
-      if (e.target.closest('[data-cw-input]')) return;
       const item = e.target.closest('[data-cw-item]');
       if (item) {
         const i = parseInt(item.getAttribute('data-cw-item'), 10);
@@ -4090,32 +4389,18 @@
       }
     });
 
-    // Store user-typed prompt as they type, without triggering re-render (preserves cursor).
-    root.addEventListener('input', (e) => {
-      const inp = e.target.closest && e.target.closest('[data-cw-input]');
-      if (!inp) return;
-      const idx = parseInt(inp.getAttribute('data-cw-input'), 10);
-      state.typedTexts[idx] = inp.value;
-      state.replayMode = false; // user is editing — stop auto-advance
-    });
-
-    // Enter key in the gate input → send the prompt.
-    root.addEventListener('keydown', (e) => {
-      const inp = e.target.closest && e.target.closest('[data-cw-input]');
-      if (!inp) return;
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        sendGate();
-      }
-    });
-
     root.addEventListener('mouseover', (e) => {
       const item = e.target.closest('[data-cw-item]');
       if (item) { state.hovIdx = parseInt(item.getAttribute('data-cw-item'), 10); update(); return; }
       const block = e.target.closest('[data-cw-block]');
       if (block) { state.hovIdx = parseInt(block.getAttribute('data-cw-block'), 10); update(); return; }
       const leg = e.target.closest('[data-cw-legend]');
-      if (leg) { state.hovCat = leg.getAttribute('data-cw-legend'); update(); return; }
+      if (leg) {
+        state.hovCat = leg.getAttribute('data-cw-legend');
+        update();           // refreshes data-tip with fresh percentages
+        showFloatTipFor(leg);
+        return;
+      }
     });
 
     root.addEventListener('mouseout', (e) => {
@@ -4128,11 +4413,292 @@
       if (e.target.closest('[data-cw-legend]')) {
         if (!leaving || !leaving.closest || !leaving.closest('[data-cw-legend]')) {
           state.hovCat = null; update();
+          hideFloatTip();
         }
       }
     });
 
+    // ── Mode + session combobox wiring ──
+    const replayableSessions = listReplayableSessions();
+
+    // Combobox state
+    const ui = {
+      search: '',       // current filter query
+      sort: 'recent'    // 'recent' | 'turns'
+    };
+
+    function formatSessionOption(s) {
+      const d = new Date(s.maxTs);
+      const pad = (n) => (n < 10 ? '0' + n : '' + n);
+      const dayNames = (t('dayNames') || 'Sun,Mon,Tue,Wed,Thu,Fri,Sat').split(',');
+      const dateStr = (d.getMonth() + 1) + '/' + d.getDate() + ' ' + (dayNames[d.getDay()] || '')
+        + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+      const snippet = (s.firstPrompt && s.firstPrompt.text) ? s.firstPrompt.text : s.id;
+      return { snippet: snippet, dateStr: dateStr, turns: s.count };
+    }
+
+    // Apply search / sort / global period to produce the visible session list.
+    // The date range comes from the left-panel period filter (currentPeriod /
+    // customDateRange) — same knob that drives the rest of the dashboard.
+    function sessionInGlobalPeriod(s) {
+      if (customDateRange) {
+        return s.maxTs >= customDateRange.start.getTime() && s.maxTs <= customDateRange.end.getTime();
+      }
+      if (currentPeriod === 0) return true;
+      const cutoff = new Date();
+      cutoff.setDate(cutoff.getDate() - (currentPeriod - 1));
+      cutoff.setHours(0, 0, 0, 0);
+      return s.maxTs >= cutoff.getTime();
+    }
+    function filteredSessions() {
+      const q = ui.search.trim().toLowerCase();
+      let list = replayableSessions.filter((s) => {
+        if (!sessionInGlobalPeriod(s)) return false;
+        if (!q) return true;
+        const txt = ((s.firstPrompt && s.firstPrompt.text) || '').toLowerCase();
+        return txt.indexOf(q) >= 0 || s.id.toLowerCase().indexOf(q) >= 0;
+      });
+      if (ui.sort === 'turns') {
+        list = list.slice().sort((a, b) => b.count - a.count);
+      } else {
+        list = list.slice().sort((a, b) => b.maxTs - a.maxTs);
+      }
+      return list;
+    }
+
+    function renderSessionList() {
+      const list = filteredSessions();
+      if (list.length === 0) {
+        sessionList.innerHTML = '<div style="padding:12px 14px;font-size:12px;color:var(--cw-text-faint)">' + escapeHtml(t('cwe_noMatch')) + '</div>';
+        return;
+      }
+      const html = list.map((s) => {
+        const f = formatSessionOption(s);
+        const active = s.id === state.sessionId;
+        const bg = active ? 'rgba(217,119,87,0.08)' : 'transparent';
+        return '<div data-cw-pick="' + escapeHtml(s.id) + '" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--cw-border);background:' + bg + '">'
+          +   '<div style="font-size:13px;color:var(--cw-text-2);line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(f.snippet) + '</div>'
+          +   '<div style="font-size:11px;color:var(--cw-text-faint);font-family:var(--cw-font-mono);margin-top:2px">' + escapeHtml(f.dateStr) + ' · ' + f.turns + ' ' + escapeHtml(t('cwe_sessionTurns')) + '</div>'
+          + '</div>';
+      }).join('');
+      sessionList.innerHTML = html;
+    }
+
+    function openSessionList() {
+      if (replayableSessions.length === 0) return;
+      renderSessionList();
+      sessionList.style.display = 'block';
+    }
+    function closeSessionList() { sessionList.style.display = 'none'; }
+
+    function applySessionInputLabel() {
+      const cur = replayableSessions.find((s) => s.id === state.sessionId);
+      if (cur) {
+        const f = formatSessionOption(cur);
+        sessionInput.value = f.snippet + '  —  ' + f.dateStr;
+      } else {
+        sessionInput.value = '';
+      }
+    }
+
+    function selectSession(sessionId) {
+      const events = buildSessionEvents(sessionId);
+      state.sessionId = sessionId;
+      state.sessionEvents = events;
+      state.sessionLabelStash = null; // new selection — discard any stashed previous label
+      ui.search = '';
+      // Bump the budget to 1M for sessions whose peak cumulative exceeds 200K
+      // (those sessions must have been on a 1m-context model).
+      const peak = events.reduce((m, e) => e.cumulative > m ? e.cumulative : m, 0);
+      state.budget = peak > MAX ? BIG_MAX : MAX;
+      // Default to "full view": show the whole timeline immediately.
+      state.time = 1;
+      state.gatesPassed = 0;
+      state.selIdx = null;
+      state.hovIdx = null;
+      state.playing = false;
+      applySessionInputLabel();
+      closeSessionList();
+      update();
+      // Persist selection in the URL so refresh keeps the user on this session.
+      contextSubPath = sessionId;
+      try { pushState(false); } catch (e) { /* ignore */ }
+    }
+
+    function updateSortStyling() {
+      sortBtns.forEach((b) => {
+        const active = b.getAttribute('data-cw-sort') === ui.sort;
+        b.style.background = active ? 'var(--cw-bg)' : 'transparent';
+        b.style.color = active ? 'var(--cw-text)' : 'var(--cw-text-2)';
+        b.style.boxShadow = active ? '0 1px 3px rgba(0,0,0,0.08)' : 'none';
+      });
+    }
+
+    function setMode(mode) {
+      if (mode === state.mode) return;
+      if (mode === 'session' && replayableSessions.length === 0) return;
+      state.mode = mode;
+      state.time = 0;
+      state.gatesPassed = 0;
+      state.selIdx = null;
+      state.hovIdx = null;
+      state.playing = false;
+      state.hasInteracted = true;
+      modeBtns.forEach((b) => {
+        const active = b.getAttribute('data-cw-mode') === mode;
+        b.style.background = active ? 'var(--cw-bg)' : 'transparent';
+        b.style.color = active ? 'var(--cw-text)' : 'var(--cw-text-2)';
+        b.style.boxShadow = active ? '0 1px 3px rgba(0,0,0,0.08)' : 'none';
+      });
+      if (mode === 'session') {
+        sessionTools.style.display = 'inline-flex';
+        bottomBar.style.display = 'none';
+        // Bar hidden → give cw-main the same 16px bottom that the bar used to provide.
+        mainEl.style.paddingBottom = '16px';
+        // Entering session mode always starts fresh — nothing selected,
+        // input shows only the placeholder. User must pick a session.
+        state.sessionId = null;
+        state.sessionEvents = [];
+        state.sessionLabelStash = null;
+        state.budget = MAX;
+        sessionInput.value = '';
+        ui.search = '';
+        update();
+        // Persist mode so refresh keeps the user on the session tab even without a pick.
+        contextSubPath = 'session';
+        try { pushState(false); } catch (e) { /* ignore */ }
+      } else {
+        sessionTools.style.display = 'none';
+        bottomBar.style.display = 'flex';
+        mainEl.style.paddingBottom = '0';
+        state.budget = MAX;
+        closeSessionList();
+        update();
+        contextSubPath = '';
+        try { pushState(false); } catch (e) { /* ignore */ }
+      }
+    }
+
+    // Initialize empty-state hint
+    if (replayableSessions.length === 0) {
+      sessionEmpty.style.display = 'inline';
+      modeBtns.forEach((b) => {
+        if (b.getAttribute('data-cw-mode') === 'session') {
+          b.disabled = true;
+          b.style.opacity = '0.4';
+          b.style.cursor = 'not-allowed';
+        }
+      });
+    }
+
+    // Restore session state from contextSubPath so re-renders (e.g. scope /
+    // period changes) don't bounce the user back to example mode.
+    // `pendingContextSid` was only used by the original deep-link path; we now
+    // rely on the module-level `contextSubPath` which is kept in sync by
+    // setMode() / selectSession() / applyHash().
+    pendingContextSid = null;
+    const deepLinkSid = contextSubPath;
+    if (deepLinkSid === 'session' && replayableSessions.length > 0) {
+      state.mode = 'session';
+      sessionTools.style.display = 'inline-flex';
+      bottomBar.style.display = 'none';
+      mainEl.style.paddingBottom = '16px';
+    } else if (deepLinkSid && replayableSessions.some((s) => s.id === deepLinkSid)) {
+      state.mode = 'session';
+      sessionTools.style.display = 'inline-flex';
+      bottomBar.style.display = 'none';
+      mainEl.style.paddingBottom = '16px';
+      selectSession(deepLinkSid);
+    }
+
+    // Initialize mode + sort tab styling on first render.
+    modeBtns.forEach((b) => {
+      const active = b.getAttribute('data-cw-mode') === state.mode;
+      if (active) {
+        b.style.background = 'var(--cw-bg)';
+        b.style.color = 'var(--cw-text)';
+        b.style.boxShadow = '0 1px 3px rgba(0,0,0,0.08)';
+      }
+    });
+    updateSortStyling();
+
+    modeBtns.forEach((b) => {
+      b.addEventListener('click', () => setMode(b.getAttribute('data-cw-mode')));
+    });
+
+    // Combobox interactions
+    // When a session is selected, any re-interaction (focus via Tab, or mousedown
+    // while the input is already focused) should clear the value. We use mousedown
+    // AND focus because focus does not re-fire on already-focused inputs.
+    function clearInputIfSessionPicked() {
+      if (state.sessionId && sessionInput.value && !state.sessionLabelStash) {
+        state.sessionLabelStash = sessionInput.value;
+        sessionInput.value = '';
+        ui.search = '';
+      }
+    }
+    sessionInput.addEventListener('focus', () => {
+      clearInputIfSessionPicked();
+      openSessionList();
+    });
+    sessionInput.addEventListener('mousedown', () => {
+      clearInputIfSessionPicked();
+      openSessionList();
+    });
+    sessionInput.addEventListener('input', () => {
+      ui.search = sessionInput.value;
+      openSessionList();
+    });
+    sessionInput.addEventListener('blur', () => {
+      // If the user blurred without actually picking a new session, restore the
+      // previous label. selectSession() clears the stash on successful selection,
+      // so when stash is still set here it means "no new pick happened".
+      if (state.sessionLabelStash) {
+        sessionInput.value = state.sessionLabelStash;
+        ui.search = '';
+      }
+      state.sessionLabelStash = null;
+    });
+    sessionInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { closeSessionList(); sessionInput.blur(); }
+      else if (e.key === 'Enter') {
+        const first = sessionList.querySelector('[data-cw-pick]');
+        if (first) selectSession(first.getAttribute('data-cw-pick'));
+      }
+    });
+    sessionList.addEventListener('mousedown', (e) => {
+      // mousedown (not click) so the input doesn't lose focus before we select.
+      const row = e.target.closest('[data-cw-pick]');
+      if (!row) return;
+      e.preventDefault();
+      selectSession(row.getAttribute('data-cw-pick'));
+    });
+    document.addEventListener('mousedown', (e) => {
+      if (!sessionTools.contains(e.target)) closeSessionList();
+    });
+
+    sortBtns.forEach((b) => {
+      b.addEventListener('click', () => {
+        ui.sort = b.getAttribute('data-cw-sort');
+        updateSortStyling();
+        if (sessionList.style.display === 'block') renderSessionList();
+      });
+    });
+
     playBtn.addEventListener('click', togglePlay);
+    const skipBtn = document.getElementById('cw-skip');
+    if (skipBtn) skipBtn.addEventListener('click', () => {
+      state.playing = false;
+      if (state.rafId) { cancelAnimationFrame(state.rafId); state.rafId = null; }
+      // In example mode, jump to the current gate rather than past it.
+      const nextGate = activeGates().find((g, i) => i >= state.gatesPassed);
+      if (state.mode === 'example' && nextGate) {
+        state.time = nextGate.at;
+      } else {
+        state.time = 1;
+      }
+      update();
+    });
     fsBtn.addEventListener('click', () => {
       if (document.fullscreenElement) document.exitFullscreen();
       else root.requestFullscreen && root.requestFullscreen().catch(() => {});
