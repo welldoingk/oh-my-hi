@@ -520,20 +520,16 @@ async function collectAllScopes(scopes, { days = 0, cache, cachePath, progress =
     scopeData[result.id] = result.data;
   }
 
-  // Backfill: project scopes inherit global skills/MCP into their contextStats so the
-  // explorer can show the *full* startup picture for any selected scope.
+  // Backfill: project scopes always load global skills/MCP alongside their own,
+  // so add global counts to project-local counts for the full startup picture.
   const gs = globalData.contextStats;
   if (gs) {
     for (const [id, sd] of Object.entries(scopeData)) {
       if (id === 'global' || !sd.contextStats) continue;
-      if (sd.contextStats.skillsCount === 0) {
-        sd.contextStats.skillsCount = gs.skillsCount;
-        sd.contextStats.skillsDescTokens = gs.skillsDescTokens;
-      }
-      if (sd.contextStats.mcpServersCount === 0) {
-        sd.contextStats.mcpServersCount = gs.mcpServersCount;
-        sd.contextStats.mcpToolsTokens = gs.mcpToolsTokens;
-      }
+      sd.contextStats.skillsCount += gs.skillsCount;
+      sd.contextStats.skillsDescTokens += gs.skillsDescTokens;
+      sd.contextStats.mcpServersCount += gs.mcpServersCount;
+      sd.contextStats.mcpToolsTokens += gs.mcpToolsTokens;
     }
   }
 
@@ -946,15 +942,18 @@ function emptyScopeData() {
 }
 
 /**
- * Rough token estimator: ASCII ~4 chars/tok, non-ASCII (CJK etc) ~1.8 chars/tok.
- * Fine for illustrative numbers in the context explorer.
+ * Rough token estimator for the context explorer.
+ * ASCII alphanumeric/space ~4 chars/tok, ASCII punctuation ~2 chars/tok (often
+ * individual tokens in code), non-ASCII (CJK etc) ~1.5 chars/tok.
  */
 function estimateTokens(text) {
   if (!text) return 0;
   let n = 0;
   for (let i = 0; i < text.length; i++) {
     const code = text.charCodeAt(i);
-    n += code < 128 ? 0.25 : 0.55;
+    if (code >= 128) { n += 0.65; }
+    else if ((code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code === 32 || code === 10 || code === 9) { n += 0.25; }
+    else { n += 0.5; }
   }
   return Math.round(n);
 }

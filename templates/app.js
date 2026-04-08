@@ -3429,7 +3429,9 @@
       let n = 0;
       for (let i = 0; i < text.length; i++) {
         const code = text.charCodeAt(i);
-        n += code < 128 ? 0.25 : 0.55;
+        if (code >= 128) { n += 0.65; }
+        else if ((code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code === 32 || code === 10 || code === 9) { n += 0.25; }
+        else { n += 0.5; }
       }
       return Math.max(1, Math.round(n));
     }
@@ -3470,7 +3472,9 @@
       // User-typed prompt per gate index. Undefined until the user has seen that gate.
       typedTexts: {},
       // Auto-focus the gate input the first time a new gate appears.
-      gateFocusWanted: false
+      gateFocusWanted: false,
+      // When true, gates with saved typedTexts auto-advance after a brief pause.
+      replayMode: false
     };
 
     // Cancel any previous animation / key handler on re-entry
@@ -3551,6 +3555,7 @@
       +       '<div id="cw-progress-bottom" style="width:0%;height:100%;background:#D97757;transition:width 0.1s linear"></div>'
       +     '</div>'
       +     '<span id="cw-percent" style="font-size:12px;font-family:var(--cw-font-mono);color:var(--cw-text-faint);min-width:30px">0%</span>'
+      +     '<span style="font-size:11px;color:var(--cw-text-faint);opacity:0.6;margin-left:4px">' + escapeHtml(t('cwe_kbdHint')) + '</span>'
       +     '<button id="cw-fs" aria-label="Fullscreen" title="Fullscreen" style="width:28px;height:28px;border-radius:6px;border:1px solid var(--cw-border);background:var(--cw-surface);color:var(--cw-text-dim);cursor:pointer;font-size:15px;flex-shrink:0;margin-left:4px;display:flex;align-items:center;justify-content:center">⛶</button>'
       +   '</div>'
       + '</div>';
@@ -3776,8 +3781,10 @@
       if (activeGate) {
         const gateIdx = state.gatesPassed;
         const currentVal = state.typedTexts[gateIdx] != null ? state.typedTexts[gateIdx] : t(activeGate.gateKey);
+        const placeholder = activeGate.kind === 'prompt' ? t(activeGate.gateKey) : '';
         const inputAttrs = 'data-cw-input="' + gateIdx + '" type="text" autocomplete="off" spellcheck="false" '
-          + 'value="' + escapeHtml(currentVal) + '"';
+          + 'value="' + escapeHtml(currentVal) + '"'
+          + (placeholder ? ' placeholder="' + escapeHtml(placeholder) + '"' : '');
         const isCompact = activeGate.kind === 'compact';
 
         if (!isCompact) {
@@ -3832,8 +3839,24 @@
           + '<div style="display:flex;width:fit-content;padding:3px 8px;border-radius:4px;margin-bottom:8px;background:' + meta.badgeBg + '">'
           +   '<span style="font-size:12px;font-weight:600;color:' + meta.badgeColor + '">' + escapeHtml(t(meta.detailKey)) + '</span>'
           + '</div>';
-        if (tok > 0) {
-          html += '<div style="font-size:14px;font-family:var(--cw-font-mono);color:var(--cw-text-dim);margin-bottom:6px">' + fmt(tok) + ' ' + escapeHtml(t('cwe_tokensWord')) + '</div>';
+        {
+          const isMeasured = hovEvent.statKey && resolveStat(hovEvent.statKey) != null;
+          if (tok > 0) {
+            const badgeLabel = isMeasured ? t('cwe_measured') : t('cwe_illustrativeTag');
+            const badgeTitle = isMeasured ? t('cwe_measuredDesc') : t('cwe_illustrativeTagDesc');
+            const badgeBg = isMeasured ? 'rgba(85,138,66,0.12)' : 'rgba(140,140,130,0.1)';
+            const badgeCol = isMeasured ? '#558A42' : 'var(--cw-text-faint)';
+            html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">'
+              + '<span style="font-size:14px;font-family:var(--cw-font-mono);color:var(--cw-text-dim)">' + fmt(tok) + ' ' + escapeHtml(t('cwe_tokensWord')) + '</span>'
+              + '<span title="' + escapeHtml(badgeTitle) + '" style="font-size:10px;font-weight:600;padding:1px 6px;border-radius:3px;background:' + badgeBg + ';color:' + badgeCol + ';text-transform:uppercase;letter-spacing:0.3px">' + escapeHtml(badgeLabel) + '</span>'
+              + '</div>';
+          } else if (isMeasured && tok === 0) {
+            html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">'
+              + '<span style="font-size:14px;font-family:var(--cw-font-mono);color:var(--cw-text-faint)">0 ' + escapeHtml(t('cwe_tokensWord')) + '</span>'
+              + '<span style="font-size:10px;font-weight:600;padding:1px 6px;border-radius:3px;background:rgba(85,138,66,0.12);color:#558A42;text-transform:uppercase;letter-spacing:0.3px">' + escapeHtml(t('cwe_measured')) + '</span>'
+              + '</div>'
+              + '<div style="font-size:12px;color:var(--cw-text-faint);margin-bottom:6px;font-style:italic">' + escapeHtml(t('cwe_zeroTokens')) + '</div>';
+          }
         }
         if (subTok > 0) {
           html += '<div style="font-size:14px;font-family:var(--cw-font-mono);color:#9B7BC4;margin-bottom:6px">' + escapeHtml(t('cwe_tokensInSubagent', fmt(subTok))) + '</div>';
@@ -3880,6 +3903,15 @@
         + '<div style="font-size:11px;font-weight:700;color:var(--cw-text-dim);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:3px">' + escapeHtml(t('cwe_terminalView')) + '</div>'
         + '<div style="font-size:13px;color:var(--cw-text-3);line-height:1.5">' + escapeHtml(terminalView) + '</div>'
         + '</div>';
+
+      // Mixed data note — shown when we have at least one measured stat
+      const hasMeasured = stats && Object.values(stats).some((v) => v != null && v > 0);
+      if (hasMeasured && state.time > 0) {
+        html += '<div style="padding:6px 10px;border-radius:6px;font-size:11px;color:var(--cw-text-faint);line-height:1.4;display:flex;align-items:flex-start;gap:5px">'
+          + '<span style="flex-shrink:0;opacity:0.6">ℹ</span>'
+          + '<span>' + escapeHtml(t('cwe_mixedDataNote')) + '</span>'
+          + '</div>';
+      }
 
       detailEl.innerHTML = html;
       detailEl.scrollTop = 0;
@@ -3965,7 +3997,19 @@
         const gate = GATES.find((g, i) => i >= state.gatesPassed && next >= g.at && prev < g.resumeTo);
         if (gate) {
           state.time = gate.at;
+          const gateIdx = GATES.indexOf(gate);
+          // In replay mode, auto-advance gates that have saved text.
+          if (state.replayMode && state.typedTexts[gateIdx] != null) {
+            state.gatesPassed += 1;
+            state.time = gate.resumeTo;
+            update();
+            state.lastTs = null; // reset so next frame starts fresh from resumeTo
+            state.rafId = requestAnimationFrame(step);
+            window._cwRafId = state.rafId;
+            return;
+          }
           state.playing = false;
+          state.replayMode = false;
           state.gateFocusWanted = true;
           update();
           return;
@@ -4007,10 +4051,13 @@
 
     function togglePlay() {
       if (state.time >= 1) {
+        // Replay mode: auto-advance through gates that already have typed text.
+        const hasTyped = Object.keys(state.typedTexts).length > 0;
         state.time = 0;
         state.gatesPassed = 0;
         state.selIdx = null;
         state.hovIdx = null;
+        state.replayMode = hasTyped;
         startAnim();
         return;
       }
@@ -4049,6 +4096,7 @@
       if (!inp) return;
       const idx = parseInt(inp.getAttribute('data-cw-input'), 10);
       state.typedTexts[idx] = inp.value;
+      state.replayMode = false; // user is editing — stop auto-advance
     });
 
     // Enter key in the gate input → send the prompt.

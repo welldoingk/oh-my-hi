@@ -536,5 +536,13 @@
   "cwe_term_followup": "Your follow-up prompt.",
   "cwe_term_subagent": "A brief notice that a subagent is working, then its result. You don't see the subagent's individual file reads.",
   "cwe_term_commitPush": "Claude's response, your git status output, and the commit-push skill running.",
-  "cwe_term_full": "Your full conversation. /compact is available to run."
+  "cwe_term_full": "Your full conversation. /compact is available to run.",
+
+  "cwe_measured": "measured",
+  "cwe_measuredDesc": "Actual value from your current harness setup",
+  "cwe_illustrativeTag": "illustrative",
+  "cwe_illustrativeTagDesc": "Example value showing a typical session flow",
+  "cwe_mixedDataNote": "Startup values (CLAUDE.md, memory, skills, MCP) are measured; the rest are illustrative.",
+  "cwe_kbdHint": "Space play/pause · Enter send · click to pin",
+  "cwe_zeroTokens": "Not present in this project"
 }
