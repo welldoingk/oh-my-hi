@@ -519,6 +519,20 @@ async function collectAllScopes(scopes, { days = 0, cache, cachePath, progress =
   for (const result of projectResults) {
     scopeData[result.id] = result.data;
   }
+
+  // Backfill: project scopes always load global skills/MCP alongside their own,
+  // so add global counts to project-local counts for the full startup picture.
+  const gs = globalData.contextStats;
+  if (gs) {
+    for (const [id, sd] of Object.entries(scopeData)) {
+      if (id === 'global' || !sd.contextStats) continue;
+      sd.contextStats.skillsCount += gs.skillsCount;
+      sd.contextStats.skillsDescTokens += gs.skillsDescTokens;
+      sd.contextStats.mcpServersCount += gs.mcpServersCount;
+      sd.contextStats.mcpToolsTokens += gs.mcpToolsTokens;
+    }
+  }
+
   return scopeData;
 }
 
@@ -811,7 +825,8 @@ async function collectScopeData(configDir, { days = 0, cache, cachePath } = {}) 
   // Async usage parser runs concurrently with sync parsers' setup
   const usage = await parseUsage(configDir, days, null, { cache, cachePath });
 
-  return { ...syncData, usage };
+  const contextStats = computeContextStats(syncData, configDir, { type: 'global', configPath: configDir });
+  return { ...syncData, contextStats, usage };
 }
 
 /** Collect project scope data */
@@ -839,7 +854,8 @@ async function collectProjectData(configPath, projectPath, { days = 0, cache, ca
   let usage;
   try { usage = await parseUsage(CLAUDE_CONFIG_DIR, days, configPath, { cache, cachePath }); } catch { usage = emptyUsage; }
 
-  return { ...syncData, usage };
+  const contextStats = computeContextStats(syncData, CLAUDE_CONFIG_DIR, { type: 'project', configPath, projectPath });
+  return { ...syncData, contextStats, usage };
 }
 
 /**
@@ -920,7 +936,75 @@ function emptyScopeData() {
     configFiles: [], skills: [], agents: [], plugins: [], hooks: [],
     memory: [], mcpServers: [], rules: [], principles: [],
     commands: [], teams: [], plans: [], todos: [],
+    contextStats: null,
     usage: { commands: [], skills: [], agents: [], mcpCalls: [], tokenEntries: [], promptStats: [], latencyEntries: [], dailyActivity: [] },
+  };
+}
+
+/**
+ * Rough token estimator for the context explorer.
+ * ASCII alphanumeric/space ~4 chars/tok, ASCII punctuation ~2 chars/tok (often
+ * individual tokens in code), non-ASCII (CJK etc) ~1.5 chars/tok.
+ */
+function estimateTokens(text) {
+  if (!text) return 0;
+  let n = 0;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code >= 128) { n += 0.65; }
+    else if ((code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || code === 32 || code === 10 || code === 9) { n += 0.25; }
+    else { n += 0.5; }
+  }
+  return Math.round(n);
+}
+
+/** Compute real stats for the context explorer for one scope. */
+function computeContextStats(scopeData, globalConfigDir, scope) {
+  // Global CLAUDE.md: always read from the global config dir so project scopes see it too.
+  let globalClaudeTokens = 0;
+  try {
+    const gp = path.join(globalConfigDir, 'CLAUDE.md');
+    if (fs.existsSync(gp)) globalClaudeTokens = estimateTokens(fs.readFileSync(gp, 'utf-8'));
+  } catch { /* ignore */ }
+
+  // Project CLAUDE.md: only for project scopes. Look at configFiles (already parsed with body).
+  let projectClaudeTokens = 0;
+  if (scope.type === 'project') {
+    const proj = (scopeData.configFiles || []).find((f) => f.scope === 'project' && (f.name === 'CLAUDE.md' || f.name === 'CLAUDE.md (project)'));
+    if (proj && proj.body) projectClaudeTokens = estimateTokens(proj.body);
+  }
+
+  // Auto memory (MEMORY.md) — only exists for project scopes under configPath/memory/MEMORY.md.
+  let autoMemoryTokens = 0;
+  if (scope.type === 'project' && scope.configPath) {
+    try {
+      const mp = path.join(scope.configPath, 'memory', 'MEMORY.md');
+      if (fs.existsSync(mp)) autoMemoryTokens = estimateTokens(fs.readFileSync(mp, 'utf-8'));
+    } catch { /* ignore */ }
+  }
+
+  // Skill descriptions: the startup context holds one-liners per skill. Sum description tokens.
+  const skills = scopeData.skills || [];
+  let skillsDescTokens = 0;
+  for (const s of skills) {
+    if (s.description) skillsDescTokens += estimateTokens(s.description);
+  }
+  // Add a small per-skill framing overhead (~10 tokens) to match observed context cost.
+  skillsDescTokens += skills.length * 10;
+
+  // MCP tool listing (deferred): just names + small schema trailer. Estimate ~15 tokens per server.
+  const mcpServersCount = (scopeData.mcpServers || []).length;
+  const mcpToolsTokens = mcpServersCount * 15;
+
+  return {
+    globalClaudeTokens,
+    projectClaudeTokens,
+    autoMemoryTokens,
+    skillsCount: skills.length,
+    skillsDescTokens,
+    mcpServersCount,
+    mcpToolsTokens,
+    scopeType: scope.type,
   };
 }
 

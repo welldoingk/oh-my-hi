@@ -58,6 +58,8 @@ output/                          # Generated artifacts (gitignored)
 
 ## Release Workflow
 
+**IMPORTANT: Do NOT run the release process automatically after completing a task. Only execute when the user explicitly requests a release (e.g. "릴리스해줘", "버전 올려줘", "release", "publish").**
+
 Execute in order when a version bump is requested:
 
 1. `npm test` — abort on failure

@@ -107,6 +107,11 @@
   let searchQuery = '';
   let tokenBudget = JSON.parse(localStorage.getItem('harness-budget') || 'null');
   let currentSessionId = null;
+  let pendingContextSid = null;
+  // Sub-path for the context explorer page ('' | 'session' | '<sessionId>').
+  // Lifted to module scope so getHash() / pushState() see it and don't overwrite
+  // the URL on the initial render.
+  let contextSubPath = '';
   let compareMode = localStorage.getItem('harness-compare') === 'true';
 
   // ── DOM refs ──
@@ -258,6 +263,9 @@
     if (currentView === 'session' && currentSessionId) {
       return '#session/' + encodeURIComponent(currentSessionId);
     }
+    if (currentView === 'context' && contextSubPath) {
+      return '#context/' + encodeURIComponent(contextSubPath);
+    }
     if (currentDetail) {
       return '#' + currentDetail.category + '/' + encodeURIComponent(currentDetail.name);
     }
@@ -279,6 +287,15 @@
     if (!hash) return;
     let parts = hash.split('/');
     let view = parts[0];
+    if (view === 'context') {
+      currentView = 'context';
+      currentDetail = null;
+      pendingContextSid = parts.length > 1 ? decodeURIComponent(parts.slice(1).join('/')) : null;
+      contextSubPath = pendingContextSid || '';
+      return;
+    }
+    // Any other view → reset context sub-path so returning to #context doesn't stick
+    if (view !== 'context') contextSubPath = '';
     if (parts.length > 1) {
       let name = decodeURIComponent(parts.slice(1).join('/'));
       currentView = view;
@@ -289,7 +306,7 @@
       currentSessionId = decodeURIComponent(parts.slice(1).join('/'));
       currentDetail = null;
       expandedCategories._tokens = true;
-    } else if (view === 'overview' || view === 'structure' || view === 'tokens' || view === 'tokens-cost' || view === 'tokens-prompt' || view === 'tokens-session' || view === 'tokens-analysis' || view === 'help') {
+    } else if (view === 'overview' || view === 'structure' || view === 'context' || view === 'tokens' || view === 'tokens-cost' || view === 'tokens-prompt' || view === 'tokens-session' || view === 'tokens-analysis' || view === 'help') {
       currentView = view === 'tokens-analysis' ? 'tokens-prompt' : view;
       currentDetail = null;
       if (view.startsWith('tokens')) expandedCategories._tokens = true;
@@ -686,6 +703,7 @@
         + '</div>';
     }
     html += navItem('structure', '🗂️', t('structure'), null, currentView === 'structure' && !currentDetail);
+    html += navItem('context', '🪟', t('contextExplorer'), null, currentView === 'context' && !currentDetail);
     html += '<div class="nav-separator"></div>';
 
     CATEGORIES.forEach((cat) => {
@@ -790,6 +808,8 @@
       renderSessionDetail();
     } else if (currentView === 'structure') {
       renderStructure();
+    } else if (currentView === 'context') {
+      renderContextExplorer();
     } else if (currentView === 'help') {
       renderHelp();
     } else {
@@ -3309,6 +3329,1403 @@
 
     // Output
     drawNode(outputNode, false);
+  }
+
+  // ── Context Window Explorer ──
+  // Ported from https://code.claude.com/docs/en/context-window (interactive simulation).
+  // Single source of truth for events/gates/meta; renders via innerHTML and updates via closure state.
+  function renderContextExplorer() {
+    const MAX = 200000;        // standard Claude Code context window
+    const BIG_MAX = 1000000;   // 1M-context models (Opus/Sonnet 4.6 [1m])
+    const STARTUP_END = 0.2;
+
+    // Pull real environment stats (from computeContextStats in the build script).
+    // For any event marked with `statKey`, we override the illustrative default
+    // with the measured value. Zero-valued stats still get shown (they are informative).
+    const stats = getScopeData().contextStats || {};
+
+    // Each event has an `id` used to look up `cwe_ev{id}_label`, `_desc`, and optionally `_tip`.
+    // `statKey` points to a field in `stats` that overrides `tokens` (or `subTokens` for sub events).
+    const EXAMPLE_EVENTS = [
+      { id: 1,  t: 0.015, kind: 'auto',   tokens: 4200, color: '#6B6964', vis: 'hidden', link: null },
+      { id: 2,  t: 0.035, kind: 'auto',   tokens: 680,  color: '#E8A45C', vis: 'hidden', statKey: 'autoMemoryTokens',  link: 'https://code.claude.com/docs/en/memory#auto-memory' },
+      { id: 3,  t: 0.06,  kind: 'auto',   tokens: 280,  color: '#6B6964', vis: 'hidden', link: null },
+      { id: 4,  t: 0.08,  kind: 'auto',   tokens: 120,  color: '#9B7BC4', vis: 'hidden', statKey: 'mcpToolsTokens',    link: 'https://code.claude.com/docs/en/mcp#scale-with-mcp-tool-search' },
+      { id: 5,  t: 0.10,  kind: 'auto',   tokens: 450,  color: '#D4A843', vis: 'hidden', statKey: 'skillsDescTokens',  noSurviveCompact: true, link: 'https://code.claude.com/docs/en/skills' },
+      { id: 6,  t: 0.12,  kind: 'auto',   tokens: 320,  color: '#6A9BCC', vis: 'hidden', statKey: 'globalClaudeTokens',link: 'https://code.claude.com/docs/en/memory#choose-where-to-put-claude-md-files' },
+      { id: 7,  t: 0.14,  kind: 'auto',   tokens: 1800, color: '#6A9BCC', vis: 'hidden', statKey: 'projectClaudeTokens', hasTip: true, link: 'https://code.claude.com/docs/en/memory' },
+      { id: 8,  t: 0.22,  kind: 'user',   tokens: 45,   color: '#558A42', vis: 'full',   link: null },
+      { id: 9,  t: 0.28,  kind: 'claude', tokens: 2400, color: '#8A8880', vis: 'brief',  hasTip: true, link: null },
+      { id: 10, t: 0.32,  kind: 'claude', tokens: 1100, color: '#8A8880', vis: 'brief',  link: null },
+      { id: 11, t: 0.35,  kind: 'auto',   tokens: 380,  color: '#4A9B8E', vis: 'brief',  link: 'https://code.claude.com/docs/en/memory#path-specific-rules' },
+      { id: 12, t: 0.38,  kind: 'claude', tokens: 1800, color: '#8A8880', vis: 'brief',  link: null },
+      { id: 13, t: 0.41,  kind: 'claude', tokens: 1600, color: '#8A8880', vis: 'brief',  link: null },
+      { id: 14, t: 0.44,  kind: 'auto',   tokens: 290,  color: '#4A9B8E', vis: 'brief',  link: 'https://code.claude.com/docs/en/memory#path-specific-rules' },
+      { id: 15, t: 0.47,  kind: 'claude', tokens: 600,  color: '#A09E96', vis: 'brief',  link: null },
+      { id: 16, t: 0.53,  kind: 'claude', tokens: 800,  color: '#D97757', vis: 'full',   link: null },
+      { id: 17, t: 0.57,  kind: 'claude', tokens: 400,  color: '#D97757', vis: 'full',   link: null },
+      { id: 18, t: 0.59,  kind: 'hook',   tokens: 120,  color: '#B8860B', vis: 'hidden', hasTip: true, link: 'https://code.claude.com/docs/en/hooks-guide' },
+      { id: 19, t: 0.62,  kind: 'claude', tokens: 600,  color: '#D97757', vis: 'full',   link: null },
+      { id: 20, t: 0.64,  kind: 'hook',   tokens: 100,  color: '#B8860B', vis: 'hidden', link: 'https://code.claude.com/docs/en/hooks-guide' },
+      { id: 21, t: 0.67,  kind: 'claude', tokens: 1200, color: '#A09E96', vis: 'brief',  link: null },
+      { id: 22, t: 0.70,  kind: 'claude', tokens: 400,  color: '#D97757', vis: 'full',   link: null },
+      { id: 23, t: 0.72,  kind: 'user',   tokens: 40,   color: '#558A42', vis: 'full',   hasTip: true, link: null },
+      { id: 24, t: 0.79,  kind: 'claude', tokens: 80,   color: '#D97757', vis: 'brief',  link: 'https://code.claude.com/docs/en/sub-agents' },
+      { id: 25, t: 0.795, kind: 'sub',    tokens: 0, subTokens: 900,  color: '#6B6964', vis: 'hidden', link: 'https://code.claude.com/docs/en/sub-agents#enable-persistent-memory' },
+      { id: 26, t: 0.80,  kind: 'sub',    tokens: 0, subTokens: 1800, color: '#6A9BCC', vis: 'hidden', statKey: 'projectClaudeTokens', subStat: true, link: 'https://code.claude.com/docs/en/sub-agents' },
+      { id: 27, t: 0.805, kind: 'sub',    tokens: 0, subTokens: 970,  color: '#9B7BC4', vis: 'hidden', statKey: 'mcpPlusSkills',       subStat: true, link: 'https://code.claude.com/docs/en/sub-agents' },
+      { id: 28, t: 0.81,  kind: 'sub',    tokens: 0, subTokens: 120,  color: '#558A42', vis: 'hidden', link: 'https://code.claude.com/docs/en/sub-agents' },
+      { id: 29, t: 0.82,  kind: 'sub',    tokens: 0, subTokens: 2200, color: '#8A8880', vis: 'hidden', link: 'https://code.claude.com/docs/en/sub-agents' },
+      { id: 30, t: 0.825, kind: 'sub',    tokens: 0, subTokens: 800,  color: '#8A8880', vis: 'hidden', link: 'https://code.claude.com/docs/en/sub-agents' },
+      { id: 31, t: 0.83,  kind: 'sub',    tokens: 0, subTokens: 3100, color: '#8A8880', vis: 'hidden', link: 'https://code.claude.com/docs/en/sub-agents' },
+      { id: 32, t: 0.85,  kind: 'claude', tokens: 420, color: '#D97757', vis: 'brief',   link: 'https://code.claude.com/docs/en/sub-agents' },
+      { id: 33, t: 0.86,  kind: 'claude', tokens: 1200, color: '#D97757', vis: 'full',   link: null },
+      { id: 34, t: 0.875, kind: 'user',   tokens: 180, color: '#558A42', vis: 'full',    link: 'https://code.claude.com/docs/en/interactive-mode#bash-mode-with-prefix' },
+      { id: 35, t: 0.89,  kind: 'user',   tokens: 620, color: '#558A42', vis: 'brief',   hasTip: true, link: 'https://code.claude.com/docs/en/skills#control-who-invokes-a-skill' },
+      { id: 36, t: 0.93,  kind: 'compact',tokens: 0,   color: '#D97757', vis: 'brief',   link: 'https://code.claude.com/docs/en/how-claude-code-works#the-context-window' }
+    ];
+
+    const EXAMPLE_GATES = [
+      { at: 0.18,  kind: 'prompt',  gateKey: 'cwe_gate1', resumeTo: 0.22 },
+      { at: 0.705, kind: 'prompt',  gateKey: 'cwe_gate2', resumeTo: 0.72 },
+      { at: 0.865, kind: 'bang',    gateKey: 'cwe_gate3', resumeTo: 0.875 },
+      { at: 0.88,  kind: 'slash',   gateKey: 'cwe_gate4', resumeTo: 0.89 },
+      { at: 0.90,  kind: 'compact', gateKey: 'cwe_gate5', resumeTo: 1 }
+    ];
+
+    const KIND_META = {
+      auto:    { badgeKey: 'cwe_kindAuto',    detailKey: 'cwe_kindAutoDetail',    badgeBg: 'rgba(94,93,89,0.15)',  badgeColor: '#8A8880' },
+      user:    { badgeKey: 'cwe_kindUser',    detailKey: 'cwe_kindUserDetail',    badgeBg: 'rgba(85,138,66,0.15)', badgeColor: '#6BA656' },
+      claude:  { badgeKey: 'cwe_kindClaude',  detailKey: 'cwe_kindClaudeDetail',  badgeBg: 'rgba(217,119,87,0.12)',badgeColor: '#D97757' },
+      hook:    { badgeKey: 'cwe_kindHook',    detailKey: 'cwe_kindHookDetail',    badgeBg: 'rgba(184,134,11,0.15)',badgeColor: '#CCA020' },
+      compact: { badgeKey: 'cwe_kindCompact', detailKey: 'cwe_kindCompactDetail', badgeBg: 'rgba(217,119,87,0.12)',badgeColor: '#D97757' },
+      sub:     { badgeKey: 'cwe_kindSub',     detailKey: 'cwe_kindSubDetail',     badgeBg: 'rgba(155,123,196,0.12)',badgeColor: '#9B7BC4' },
+      // Session-mode kinds — distinct badges so skill/mcp/tool/agent aren't mislabeled as "claude".
+      skill:   { badgeKey: 'cwe_kindSkill',   detailKey: 'cwe_kindSkillDetail',   badgeBg: 'rgba(212,168,67,0.15)', badgeColor: '#B8890B' },
+      mcp:     { badgeKey: 'cwe_kindMcp',     detailKey: 'cwe_kindMcpDetail',     badgeBg: 'rgba(155,123,196,0.12)',badgeColor: '#9B7BC4' },
+      agent:   { badgeKey: 'cwe_kindAgent',   detailKey: 'cwe_kindAgentDetail',   badgeBg: 'rgba(155,123,196,0.12)',badgeColor: '#9B7BC4' },
+      tool:    { badgeKey: 'cwe_kindTool',    detailKey: 'cwe_kindToolDetail',    badgeBg: 'rgba(138,136,128,0.15)',badgeColor: '#6E6C64' }
+    };
+
+    const VIS_META = {
+      hidden: { labelKey: 'cwe_visHidden', subKey: 'cwe_visHiddenSub' },
+      brief:  { labelKey: 'cwe_visBrief',  subKey: 'cwe_visBriefSub' },
+      full:   { labelKey: 'cwe_visFull',   subKey: 'cwe_visFullSub' }
+    };
+
+    const LEGEND = [
+      { c: '#6B6964', labelKey: 'cwe_legSystem' },   { c: '#6A9BCC', labelKey: 'cwe_legClaudeMd' },
+      { c: '#E8A45C', labelKey: 'cwe_legMemory' },   { c: '#D4A843', labelKey: 'cwe_legSkills' },
+      { c: '#9B7BC4', labelKey: 'cwe_legMcp' },      { c: '#4A9B8E', labelKey: 'cwe_legRules' },
+      { c: '#558A42', labelKey: 'cwe_legYou' },      { c: '#8A8880', labelKey: 'cwe_legFiles' },
+      { c: '#A09E96', labelKey: 'cwe_legOutput' },   { c: '#D97757', labelKey: 'cwe_legClaude' },
+      { c: '#B8860B', labelKey: 'cwe_legHooks' }
+    ];
+
+    // Helpers: fetch localized label/desc/tip for example events.
+    function shortModel(m) {
+      if (!m) return '';
+      return m.replace(/^claude-/, '').replace(/-\d{8,}$/, '');
+    }
+    function fmtClock(ts) {
+      if (!ts) return '';
+      const d = new Date(ts);
+      const pad = (n) => (n < 10 ? '0' + n : '' + n);
+      return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+    }
+    const evtLabel = (e) => {
+      if (e.isSession) {
+        if (e.kind === 'compact') return t('cwe_compactionDetected');
+        if (e.kind === 'user') return t('cwe_sessionUserTurn');
+        return e.contextName || 'turn';
+      }
+      return t('cwe_ev' + e.id + '_label');
+    };
+    const evtDesc  = (e) => {
+      if (e.isSession) {
+        if (e.kind === 'compact') return t('cwe_compactionDesc');
+        return t('cwe_sessionEvtDesc', shortModel(e.model), fmtClock(e.timestamp), fmt(e.cumulative));
+      }
+      return t('cwe_ev' + e.id + '_desc');
+    };
+    const evtTip   = (e) => (!e.isSession && e.hasTip) ? t('cwe_ev' + e.id + '_tip') : null;
+    function resolveStat(statKey) {
+      if (!statKey) return null;
+      if (statKey === 'mcpPlusSkills') {
+        const a = stats.mcpToolsTokens, b = stats.skillsDescTokens;
+        if (a == null && b == null) return null;
+        return (a || 0) + (b || 0);
+      }
+      return stats[statKey] != null ? stats[statKey] : null;
+    }
+    // Returns final tokens used for an event (stat → real, else default).
+    function evtTokens(e) {
+      if (e.isSession) return e.tokens || 0;
+      if (e.subStat) return e.tokens; // sub events override subTokens instead
+      const real = resolveStat(e.statKey);
+      return real != null ? real : e.tokens;
+    }
+    function evtSubTokens(e) {
+      if (!e.subStat) return e.subTokens || 0;
+      const real = resolveStat(e.statKey);
+      return real != null ? real : (e.subTokens || 0);
+    }
+
+    // Build the list of "sessions that can be replayed" — sessions with at least 2 token
+    // entries so there is a meaningful timeline. Each entry carries a short preview
+    // of the first user prompt so the dropdown is recognizable, not just a hash.
+    function listReplayableSessions() {
+      const usage = getUsage();
+      const entries = (usage && usage.tokenEntries) || [];
+      const prompts = (usage && usage.promptStats) || [];
+      const map = {};
+      entries.forEach((e) => {
+        const sid = e.sessionId;
+        if (!sid) return;
+        if (!map[sid]) map[sid] = { id: sid, count: 0, minTs: Infinity, maxTs: 0, firstPrompt: null };
+        const s = map[sid];
+        s.count += 1;
+        const ts = typeof e.timestamp === 'number' ? e.timestamp : new Date(e.timestamp).getTime();
+        if (ts < s.minTs) s.minTs = ts;
+        if (ts > s.maxTs) s.maxTs = ts;
+      });
+      // Pull the earliest promptStats text for each session (if the parser captured it).
+      prompts.forEach((p) => {
+        if (!p.sessionId || !map[p.sessionId]) return;
+        const ts = typeof p.timestamp === 'number' ? p.timestamp : new Date(p.timestamp).getTime();
+        const cur = map[p.sessionId].firstPrompt;
+        if (!cur || ts < cur.ts) {
+          map[p.sessionId].firstPrompt = { ts: ts, text: p.text || p.preview || null, len: p.charLen || 0 };
+        }
+      });
+      return Object.values(map).filter((s) => s.count >= 2).sort((a, b) => b.maxTs - a.maxTs);
+    }
+
+    // Map a usage-entry context to a (kind, color) pair for timeline rendering.
+    // Each context type gets its own `kind` so KIND_META can show a distinct badge.
+    function mapSessionCtx(ctx, ctxName) {
+      // Color palette matches LEGEND entries.
+      const TOOL_COLORS = {
+        Read:   '#8A8880', Grep:   '#8A8880', Glob:   '#8A8880',
+        Write:  '#D97757', Edit:   '#D97757', MultiEdit: '#D97757',
+        Bash:   '#A09E96', WebFetch: '#A09E96', WebSearch: '#A09E96',
+        TodoWrite: '#A09E96', NotebookEdit: '#D97757'
+      };
+      switch (ctx) {
+        case 'skill': return { kind: 'skill', color: '#D4A843' };
+        case 'mcp':   return { kind: 'mcp',   color: '#9B7BC4' };
+        case 'agent': return { kind: 'agent', color: '#9B7BC4' };
+        case 'tool':  return { kind: 'tool',  color: TOOL_COLORS[ctxName] || '#8A8880' };
+        default:      return { kind: 'claude', color: '#D97757' }; // general / conversation
+      }
+    }
+
+    // Build a timeline of events from a real session's tokenEntries.
+    // Each API turn in the conversation becomes one event whose `_tokens` is the
+    // delta since the previous entry and whose `cumulative` is the raw inputTokens
+    // at that point (i.e. the true context window size seen by the model).
+    function buildSessionEvents(sessionId) {
+      const usage = getUsage();
+      const entries = ((usage && usage.tokenEntries) || [])
+        .filter((e) => e.sessionId === sessionId)
+        .map((e) => Object.assign({}, e, {
+          _ts: typeof e.timestamp === 'number' ? e.timestamp : new Date(e.timestamp).getTime()
+        }))
+        .sort((a, b) => a._ts - b._ts);
+      if (entries.length === 0) return [];
+
+      const promptStats = ((usage && usage.promptStats) || [])
+        .filter((p) => p.sessionId === sessionId)
+        .map((p) => typeof p.timestamp === 'number' ? p.timestamp : new Date(p.timestamp).getTime());
+
+      const minTs = entries[0]._ts;
+      const maxTs = entries[entries.length - 1]._ts;
+      const span = Math.max(1, maxTs - minTs);
+
+      const out = [];
+      let prevInput = 0;
+      entries.forEach((e, i) => {
+        const cumulative = e.inputTokens || 0;
+        let delta = cumulative - prevInput;
+        // Large negative delta while the model stays the same → /compact detected.
+        const isCompact = i > 0 && delta < -Math.max(1000, prevInput * 0.2);
+        const nearUserPrompt = promptStats.some((pts) => Math.abs(pts - e._ts) <= 2000);
+        let kind, color;
+        if (isCompact) {
+          kind = 'compact'; color = '#D97757';
+        } else if (nearUserPrompt) {
+          kind = 'user'; color = '#558A42';
+        } else {
+          const m = mapSessionCtx(e.context, e.contextName);
+          kind = m.kind; color = m.color;
+        }
+        // For compaction, delta is negative — store 0 as display tokens but keep raw cumulative.
+        const displayTokens = Math.max(0, delta);
+        out.push({
+          isSession: true,
+          id: -(i + 1), // negative ids avoid collision with EXAMPLE_EVENTS i18n keys
+          t: (e._ts - minTs) / span,
+          kind: kind,
+          tokens: displayTokens,
+          color: color,
+          vis: kind === 'user' ? 'full' : 'brief',
+          link: null,
+          cumulative: cumulative,
+          delta: delta,
+          model: e.model,
+          timestamp: e._ts,
+          contextName: e.contextName || (e.context === 'general' ? 'conversation' : e.context),
+          rawInput: e.rawInput || 0,
+          cacheRead: e.cacheRead || 0,
+          cacheCreation: e.cacheCreation || 0,
+          outputTokens: e.outputTokens || 0
+        });
+        prevInput = cumulative;
+      });
+      return out;
+    }
+
+    const fmt = (n) => {
+      if (n >= 1000000) return (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+      if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
+      return n + '';
+    };
+    const renderCode = (s) => {
+      if (!s) return '';
+      return escapeHtml(s).split('`').map((p, i) => i % 2 === 1
+        ? '<code class="cw-code">' + p + '</code>' : p).join('');
+    };
+
+    // ── State ──
+    const state = {
+      time: 0, playing: false, hovIdx: null, selIdx: null, hovCat: null,
+      gatesPassed: 0, hasInteracted: false, isFullscreen: false, rafId: null, lastTs: null,
+      // 'example' = fixed scripted scenario · 'session' = real session replay.
+      mode: 'example',
+      sessionId: null,
+      sessionEvents: [],
+      // Effective context budget — 200K for standard sessions, 1M when the
+      // selected session's peak inputTokens goes beyond 200K (1m-context model).
+      budget: MAX
+    };
+
+    // Accessors that return the events/gates for the current mode.
+    // Session mode has no gates (pure replay) and its events are built on demand.
+    function activeEvents() { return state.mode === 'session' ? state.sessionEvents : EXAMPLE_EVENTS; }
+    function activeGates()  { return state.mode === 'session' ? [] : EXAMPLE_GATES; }
+
+    // Cancel any previous animation / key handler on re-entry
+    if (window._cwRafId) { cancelAnimationFrame(window._cwRafId); window._cwRafId = null; }
+    if (window._cwKeyHandler) { window.removeEventListener('keydown', window._cwKeyHandler); window._cwKeyHandler = null; }
+    if (window._cwFsHandler) { document.removeEventListener('fullscreenchange', window._cwFsHandler); window._cwFsHandler = null; }
+    if (window._cwFloatTip && window._cwFloatTip.parentNode) {
+      window._cwFloatTip.parentNode.removeChild(window._cwFloatTip);
+      window._cwFloatTip = null;
+    }
+
+    // ── Render shell (static structure + styles) ──
+    content.innerHTML = ''
+      + '<style>'
+      + '.cw-root {'
+      + '  --cw-bg: #FAFAF8; --cw-text: #1A1918; --cw-text-2: #3D3C38; --cw-text-3: #5E5D59;'
+      + '  --cw-text-dim: #6E6C64; --cw-text-faint: #8A8880;'
+      + '  --cw-surface: rgba(0,0,0,0.025); --cw-surface-2: rgba(0,0,0,0.04);'
+      + '  --cw-border: rgba(0,0,0,0.08); --cw-track: rgba(0,0,0,0.04);'
+      + '  --cw-hover: rgba(0,0,0,0.04); --cw-rail: rgba(0,0,0,0.08);'
+      + '  --cw-scrollbar: rgba(0,0,0,0.22);'
+      + '  --cw-font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;'
+      + '  background: var(--cw-bg); border-radius: 12px; overflow: hidden;'
+      + '  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;'
+      + '  color: var(--cw-text); border: 1px solid var(--cw-border);'
+      + '  display: flex; flex-direction: column;'
+      + '  height: calc(100vh - 64px); min-height: 850px;'
+      + '}'
+      + 'body.dark .cw-root {'
+      + '  --cw-bg: #111110; --cw-text: #E8E6DC; --cw-text-2: #B8B6AE; --cw-text-3: #9C9A92;'
+      + '  --cw-text-dim: #8A8880; --cw-text-faint: #6E6C64;'
+      + '  --cw-surface: rgba(255,255,255,0.02); --cw-surface-2: rgba(255,255,255,0.015);'
+      + '  --cw-border: rgba(255,255,255,0.06); --cw-track: rgba(255,255,255,0.03);'
+      + '  --cw-hover: rgba(255,255,255,0.04); --cw-rail: rgba(255,255,255,0.04);'
+      + '  --cw-scrollbar: rgba(255,255,255,0.18);'
+      + '}'
+      + '.cw-root:fullscreen { height: 100vh; border-radius: 0; }'
+      + '.cw-scroll::-webkit-scrollbar { width: 6px; }'
+      + '.cw-scroll::-webkit-scrollbar-track { background: transparent; }'
+      + '.cw-scroll::-webkit-scrollbar-thumb { background: var(--cw-scrollbar); border-radius: 3px; }'
+      + '@keyframes cw-blink { 50% { opacity: 0; } }'
+      + '@keyframes cw-fadein { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: translateY(0); } }'
+      + '.cw-compacted-row { animation: cw-fadein 0.3s ease-out backwards; }'
+      + '.cw-code { font-family: var(--cw-font-mono); font-size: 0.92em; background: var(--cw-track); padding: 1px 4px; border-radius: 3px; }'
+      + '.cw-mobile-fallback { display: none; padding: 14px 16px; border-radius: 8px; font-size: 14px; border: 1px solid var(--cw-border); background: var(--cw-surface); color: var(--text); }'
+      + '@media (max-width: 700px) { .cw-root { display: none !important; } .cw-mobile-fallback { display: block; } }'
+      + '.cw-root a { color: #D97757; }'
+      + '.cw-tip { position: relative; }'
+      + '.cw-tip::after {'
+      + '  content: attr(data-tip); position: absolute; top: calc(100% + 6px); left: 50%;'
+      + '  transform: translateX(-50%); width: max-content; max-width: 320px;'
+      + '  padding: 8px 11px; border-radius: 6px;'
+      + '  background: rgba(30,28,24,0.95); color: #F5F3EC;'
+      + '  font-size: 11px; font-weight: 400; line-height: 1.5;'
+      + '  white-space: pre-wrap; text-align: left;'
+      + '  pointer-events: none; opacity: 0; transform-origin: top center;'
+      + '  transition: opacity 0.15s ease 0.25s; z-index: 50;'
+      + '  box-shadow: 0 6px 18px rgba(0,0,0,0.18);'
+      + '}'
+      + '.cw-tip-right::after { left: auto; right: 0; transform: none; }'
+      + '.cw-tip:hover::after, .cw-tip:focus-visible::after { opacity: 1; }'
+      + 'body.dark .cw-tip::after { background: rgba(240,238,230,0.95); color: #1A1918; }'
+      + '</style>'
+      + '<div class="cw-mobile-fallback">' + escapeHtml(t('cwe_mobileFallback')) + '</div>'
+      + '<div class="cw-root" id="cw-root" tabindex="-1">'
+      +   '<div style="padding:16px 20px 12px;display:flex;align-items:flex-end;gap:24px">'
+      +     '<div style="flex:1;min-width:0">'
+      +       '<div style="font-size:18px;font-weight:600;letter-spacing:-0.3px;line-height:1">' + escapeHtml(t('cwe_title')) + '</div>'
+      +       '<div style="font-size:14px;color:var(--cw-text-dim);margin-top:4px">' + escapeHtml(t('cwe_subtitle')) + '</div>'
+      +     '</div>'
+      +     '<div style="text-align:right;flex-shrink:0">'
+      +       '<div id="cw-tokens-display" style="font-family:var(--cw-font-mono);font-size:20px;font-weight:600;letter-spacing:-0.5px;line-height:1"></div>'
+      +       '<div style="font-family:var(--cw-font-mono);font-size:13px;color:var(--cw-text-dim);margin-top:2px;display:flex;align-items:center;justify-content:flex-end;gap:5px">'
+      +         '<span id="cw-tokens-sub">/ ' + fmt(MAX) + ' · ' + escapeHtml(t('cwe_illustrative')) + '</span>'
+      +         '<span id="cw-budget-help" class="cw-tip cw-tip-right" data-tip="" style="display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;background:var(--cw-track);color:var(--cw-text-dim);font-size:10px;font-weight:700;cursor:help;user-select:none;line-height:1">?</span>'
+      +       '</div>'
+      +     '</div>'
+      +   '</div>'
+      +   '<div style="padding:0 20px 8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
+      +     '<div role="tablist" style="display:inline-flex;gap:2px;padding:2px;background:var(--cw-track);border-radius:7px">'
+      +       '<button data-cw-mode="example" class="cw-mode-btn" style="padding:5px 12px;border-radius:5px;border:none;background:transparent;color:var(--cw-text-2);font-size:12px;font-weight:600;cursor:pointer">' + escapeHtml(t('cwe_modeExample')) + '</button>'
+      +       '<button data-cw-mode="session" class="cw-mode-btn" style="padding:5px 12px;border-radius:5px;border:none;background:transparent;color:var(--cw-text-2);font-size:12px;font-weight:600;cursor:pointer">' + escapeHtml(t('cwe_modeSession')) + '</button>'
+      +     '</div>'
+      +     '<div id="cw-session-tools" style="display:none;align-items:center;gap:8px;flex-wrap:wrap;position:relative">'
+      +       '<div style="position:relative">'
+      +         '<input id="cw-session-input" type="text" autocomplete="off" spellcheck="false" placeholder="' + escapeHtml(t('cwe_searchHint')) + '" style="width:340px;padding:6px 10px;border-radius:5px;border:1px solid var(--cw-border);background:var(--cw-surface);color:var(--cw-text-2);font-size:12px;font-family:var(--cw-font-mono);outline:none" />'
+      +         '<div id="cw-session-list" style="display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:20;width:520px;max-height:360px;overflow-y:auto;background:var(--cw-bg);border:1px solid var(--cw-border);border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,0.12)" class="cw-scroll"></div>'
+      +       '</div>'
+      +       '<div role="group" style="display:inline-flex;gap:2px;padding:2px;background:var(--cw-track);border-radius:6px">'
+      +         '<button data-cw-sort="recent" class="cw-sort-btn" style="padding:4px 10px;border-radius:4px;border:none;background:transparent;color:var(--cw-text-2);font-size:11px;font-weight:600;cursor:pointer">' + escapeHtml(t('cwe_sortRecent')) + '</button>'
+      +         '<button data-cw-sort="turns" class="cw-sort-btn cw-tip" data-tip="' + escapeHtml(t('cwe_turnsHelp')) + '" style="padding:4px 10px;border-radius:4px;border:none;background:transparent;color:var(--cw-text-2);font-size:11px;font-weight:600;cursor:pointer">' + escapeHtml(t('cwe_sortTurns')) + '</button>'
+      +       '</div>'
+      +     '</div>'
+      +     '<span id="cw-session-empty" style="display:none;font-size:12px;color:var(--cw-text-faint)">' + escapeHtml(t('cwe_noSessions')) + '</span>'
+      +   '</div>'
+      +   '<div style="padding:0 20px">'
+      +     '<div style="height:4px;border-radius:2px;background:var(--cw-track);overflow:hidden;margin-bottom:6px">'
+      +       '<div id="cw-progress-top" style="width:0%;height:100%;transition:width 0.6s cubic-bezier(0.4,0,0.2,1), background 0.3s"></div>'
+      +     '</div>'
+      +     '<div id="cw-bar" style="height:28px;border-radius:5px;background:var(--cw-track);border:1px solid var(--cw-border);overflow:hidden;display:flex"></div>'
+      +     '<div style="display:flex;gap:12px;margin-top:6px;flex-wrap:wrap;justify-content:space-between">'
+      +       '<div id="cw-legend" style="display:flex;gap:12px;flex-wrap:wrap"></div>'
+      +       '<div style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--cw-text-dim)">'
+      +         '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#558A42" stroke-width="2.5"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>'
+      +         '<span>' + escapeHtml(t('cwe_appearsInTerminal')) + '</span>'
+      +       '</div>'
+      +     '</div>'
+      +   '</div>'
+      +   '<div id="cw-main" style="display:flex;padding:14px 20px 0;gap:16px;flex:1;min-height:0">'
+      +     '<div id="cw-timeline" class="cw-scroll" style="flex:1;min-width:0;overflow-y:auto;padding-right:8px;scroll-behavior:smooth"></div>'
+      +     '<div style="width:300px;flex-shrink:0;display:flex;flex-direction:column">'
+      +       '<div id="cw-detail" class="cw-scroll" style="padding:14px 16px;border-radius:10px;background:var(--cw-surface);border:1px solid var(--cw-border);flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:10px"></div>'
+      +     '</div>'
+      +   '</div>'
+      +   '<div style="padding:10px 20px 16px;display:flex;align-items:center;gap:10px">'
+      +     '<button id="cw-play" aria-label="Play" style="width:30px;height:30px;border-radius:6px;border:none;background:rgba(217,119,87,0.1);color:#D97757;cursor:pointer;font-size:15px;font-weight:700;display:flex;align-items:center;justify-content:center">▶</button>'
+      +     '<button id="cw-skip" title="' + escapeHtml(t('cwe_skipToEnd')) + '" style="width:28px;height:28px;border-radius:6px;border:1px solid var(--cw-border);background:var(--cw-surface);color:var(--cw-text-dim);cursor:pointer;font-size:13px;flex-shrink:0;display:flex;align-items:center;justify-content:center">⏭</button>'
+      +     '<div style="flex:1;height:3px;border-radius:2px;background:var(--cw-track);overflow:hidden">'
+      +       '<div id="cw-progress-bottom" style="width:0%;height:100%;background:#D97757;transition:width 0.1s linear"></div>'
+      +     '</div>'
+      +     '<span id="cw-percent" style="font-size:12px;font-family:var(--cw-font-mono);color:var(--cw-text-faint);min-width:30px">0%</span>'
+      +     '<span style="font-size:11px;color:var(--cw-text-faint);opacity:0.6;margin-left:4px">' + escapeHtml(t('cwe_kbdHint')) + '</span>'
+      +     '<button id="cw-fs" aria-label="Fullscreen" title="Fullscreen" style="width:28px;height:28px;border-radius:6px;border:1px solid var(--cw-border);background:var(--cw-surface);color:var(--cw-text-dim);cursor:pointer;font-size:15px;flex-shrink:0;margin-left:4px;display:flex;align-items:center;justify-content:center">⛶</button>'
+      +   '</div>'
+      + '</div>';
+
+    const root = document.getElementById('cw-root');
+    const tokensDisplay = document.getElementById('cw-tokens-display');
+    const tokensSub = document.getElementById('cw-tokens-sub');
+    const budgetHelp = document.getElementById('cw-budget-help');
+    const progressTop = document.getElementById('cw-progress-top');
+    const barEl = document.getElementById('cw-bar');
+    const legendEl = document.getElementById('cw-legend');
+    const timelineEl = document.getElementById('cw-timeline');
+    const detailEl = document.getElementById('cw-detail');
+    const playBtn = document.getElementById('cw-play');
+    const progressBottom = document.getElementById('cw-progress-bottom');
+    const percentEl = document.getElementById('cw-percent');
+    const fsBtn = document.getElementById('cw-fs');
+    const mainEl = document.getElementById('cw-main');
+    const sessionTools = document.getElementById('cw-session-tools');
+    const sessionInput = document.getElementById('cw-session-input');
+    const sessionList = document.getElementById('cw-session-list');
+    const sessionEmpty = document.getElementById('cw-session-empty');
+    const modeBtns = Array.from(root.querySelectorAll('[data-cw-mode]'));
+    const sortBtns = Array.from(root.querySelectorAll('[data-cw-sort]'));
+    const bottomBar = root.children[root.children.length - 1]; // the playback control row
+
+    // Render legend once
+    legendEl.innerHTML = LEGEND.map((x) => {
+      return '<div class="cw-legend-item" data-cw-legend="' + x.c + '" data-cw-pct="' + x.c + '" data-cw-label="' + escapeHtml(t(x.labelKey)) + '" data-tip="" '
+        + 'style="display:flex;align-items:center;gap:4px;padding:2px 6px;border-radius:4px;cursor:pointer;transition:background 0.1s">'
+        + '<div style="width:6px;height:6px;border-radius:1.5px;background:' + x.c + ';opacity:0.7"></div>'
+        + '<span style="font-size:12px;color:var(--cw-text-dim)">' + escapeHtml(t(x.labelKey)) + '</span>'
+        + '</div>';
+    }).join('');
+
+    // Floating tooltip for the legend — attached to body so it escapes the
+    // .cw-root overflow:hidden clipping. Position is computed on hover and
+    // clamped to the viewport so leftmost/rightmost items never get cut off.
+    if (window._cwFloatTip && window._cwFloatTip.parentNode) {
+      window._cwFloatTip.parentNode.removeChild(window._cwFloatTip);
+    }
+    const floatTip = document.createElement('div');
+    floatTip.style.cssText = 'position:fixed; pointer-events:none; opacity:0;'
+      + ' z-index:10000; padding:7px 10px; border-radius:6px;'
+      + ' background:rgba(30,28,24,0.95); color:#F5F3EC;'
+      + ' font-size:11px; font-weight:400; line-height:1.45;'
+      + ' max-width:300px; white-space:normal; text-align:left;'
+      + ' box-shadow:0 6px 18px rgba(0,0,0,0.18);'
+      + ' transition:opacity 0.15s ease;';
+    if (document.body.classList.contains('dark')) {
+      floatTip.style.background = 'rgba(240,238,230,0.95)';
+      floatTip.style.color = '#1A1918';
+    }
+    document.body.appendChild(floatTip);
+    window._cwFloatTip = floatTip;
+
+    function showFloatTipFor(el) {
+      const txt = el.getAttribute('data-tip') || '';
+      if (!txt) return;
+      floatTip.textContent = txt;
+      // First set approximate position so we can measure, then clamp.
+      const rect = el.getBoundingClientRect();
+      floatTip.style.left = '0px';
+      floatTip.style.top = (rect.bottom + 6) + 'px';
+      floatTip.style.opacity = '1';
+      const tipRect = floatTip.getBoundingClientRect();
+      let left = rect.left + rect.width / 2 - tipRect.width / 2;
+      const margin = 8;
+      if (left < margin) left = margin;
+      if (left + tipRect.width > window.innerWidth - margin) {
+        left = window.innerWidth - margin - tipRect.width;
+      }
+      floatTip.style.left = left + 'px';
+    }
+    function hideFloatTip() { floatTip.style.opacity = '0'; }
+
+    // ── Helpers ──
+    function computeView() {
+      const events = activeEvents();
+      const gates = activeGates();
+      const visibleCount = events.filter((e) => e.t <= state.time).length;
+      const preCompactVisible = events.slice(0, visibleCount);
+      const compactGateIdx = gates.length - 1;
+      // Session mode replays real history — there is no scripted compact gate,
+      // compactions manifest as naturally shrinking `cumulative` values.
+      const isCompacted = state.mode !== 'session'
+        && state.gatesPassed > compactGateIdx
+        && preCompactVisible.some((e) => e.kind === 'compact');
+
+      let visible, preCompactTotal = 0;
+      if (!isCompacted) {
+        visible = preCompactVisible;
+      } else {
+        const nonCompact = preCompactVisible.filter((e) => e.kind !== 'compact');
+        const autoLoads = nonCompact.filter((e) => e.kind === 'auto' && e.t < STARTUP_END && !e.noSurviveCompact);
+        const summarized = nonCompact.filter((e) => e.t >= STARTUP_END && e.kind !== 'sub');
+        const sumTokens = summarized.reduce((s, e) => s + evtTokens(e), 0);
+        // Synthetic block shown after /compact. `id: 0` → i18n keys cwe_ev0_label / cwe_ev0_desc.
+        const summaryBlock = {
+          id: 0, t: STARTUP_END, kind: 'compact', isSummary: true,
+          tokens: Math.round(sumTokens * 0.12), color: '#A09E96', vis: 'hidden',
+          link: 'https://code.claude.com/docs/en/how-claude-code-works#the-context-window'
+        };
+        visible = autoLoads.concat([summaryBlock]);
+        preCompactTotal = nonCompact.reduce((s, e) => s + evtTokens(e), 0);
+      }
+
+      const blocks = visible.map((e, visIdx) => {
+        return Object.assign({}, e, { _tokens: evtTokens(e), visIdx: visIdx });
+      }).filter((e) => e._tokens > 0 || e.isSummary);
+      let totalTokens = blocks.reduce((s, b) => s + b._tokens, 0);
+      // Session mode: show the peak context size reached so far (max cumulative
+      // across all visible entries). Using "last entry" would under-report after a
+      // mid-session compaction; peak is what actually sized the model's buffer.
+      if (state.mode === 'session' && visible.length > 0) {
+        let peak = 0;
+        for (let i = 0; i < visible.length; i++) {
+          const c = visible[i].cumulative || 0;
+          if (c > peak) peak = c;
+        }
+        totalTokens = peak;
+      }
+      const subTotal = visible.filter((e) => e.kind === 'sub').reduce((s, e) => s + evtSubTokens(e), 0);
+
+      return { visible: visible, blocks: blocks, totalTokens: totalTokens, subTotal: subTotal, isCompacted: isCompacted, preCompactTotal: preCompactTotal };
+    }
+
+    function activeGateNow() {
+      return activeGates().find((g, i) => i >= state.gatesPassed && state.time >= g.at && state.time < g.resumeTo) || null;
+    }
+
+    function getTakeaway(focusT, isCompacted) {
+      if (isCompacted) return t('cwe_take_compacted');
+      if (focusT < STARTUP_END) return t('cwe_take_start');
+      if (focusT < 0.28) return t('cwe_take_userPrompt');
+      if (focusT < 0.50) return t('cwe_take_fileRead');
+      if (focusT < 0.71) return t('cwe_take_hooks');
+      if (focusT < 0.79) return t('cwe_take_followup');
+      if (focusT < 0.87) return t('cwe_take_subagent');
+      if (focusT < 0.88) return t('cwe_take_bang');
+      if (focusT < 0.90) return t('cwe_take_slash');
+      return t('cwe_take_compact');
+    }
+
+    function getTerminalView(focusT, isCompacted) {
+      if (isCompacted) return t('cwe_term_compacted');
+      if (focusT < STARTUP_END) return t('cwe_term_start');
+      if (focusT < 0.28) return t('cwe_term_userPrompt');
+      if (focusT < 0.52) return t('cwe_term_fileRead');
+      if (focusT < 0.72) return t('cwe_term_claudeWork');
+      if (focusT < 0.79) return t('cwe_term_followup');
+      if (focusT < 0.86) return t('cwe_term_subagent');
+      if (focusT < 0.90) return t('cwe_term_commitPush');
+      return t('cwe_term_full');
+    }
+
+    // ── Render sub-regions ──
+    function renderBarSegments(view) {
+      const activeIdx = state.selIdx !== null ? state.selIdx : state.hovIdx;
+      // Session mode: scale each block proportionally so the bar's total width
+      // equals peakCumulative/budget — matching the header number. Without this,
+      // the bar sums deltas (smaller than peak when cache reuse dominates) and
+      // the user sees a mismatch between the header and the bar fill level.
+      let sessionScale = 1;
+      if (state.mode === 'session' && view.blocks.length > 0) {
+        const sumDeltas = view.blocks.reduce((s, b) => s + b._tokens, 0);
+        if (sumDeltas > 0) sessionScale = view.totalTokens / sumDeltas;
+      }
+      const html = view.blocks.map((b, i) => {
+        // Example mode has only ~36 blocks, so a 0.15% minimum keeps tiny events
+        // visible without distorting totals. Session mode often has 500+ blocks —
+        // the min-width would compound into a massively inflated bar, so drop it.
+        const w = state.mode === 'session'
+          ? (b._tokens / state.budget * 100) * sessionScale
+          : Math.max(b._tokens / state.budget * 100, 0.15);
+        const isHov = b.visIdx === activeIdx;
+        const catMatch = state.hovCat && b.color === state.hovCat;
+        const dimmed = state.hovCat ? !catMatch : (activeIdx !== null && !isHov);
+        const opacity = (isHov || catMatch) ? 1 : (dimmed ? 0.25 : 0.65);
+        const borderR = i < view.blocks.length - 1 ? '0.5px solid var(--cw-border)' : 'none';
+        return '<div data-cw-block="' + b.visIdx + '" style="width:' + w + '%;height:100%;background:' + b.color + ';opacity:' + opacity + ';border-right:' + borderR + ';transition:opacity 0.15s;cursor:pointer"></div>';
+      }).join('');
+      barEl.innerHTML = html;
+    }
+
+    function renderTimeline(view) {
+      const activeGate = activeGateNow();
+      const { visible, subTotal, isCompacted, preCompactTotal, totalTokens } = view;
+      let html = '';
+
+      // Session mode with no selection yet → prompt the user to pick one.
+      if (state.mode === 'session' && state.sessionEvents.length === 0) {
+        html += '<div style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--cw-text-faint)">'
+          + '<div style="font-size:28px;opacity:0.3">⌕</div>'
+          + '<div style="font-size:14px;font-weight:500">' + escapeHtml(t('cwe_pickSessionTitle')) + '</div>'
+          + '<div style="font-size:12px;max-width:320px;text-align:center;line-height:1.5">' + escapeHtml(t('cwe_pickSessionHint')) + '</div>'
+          + '</div>';
+      }
+      if (visible.length === 0 && !state.playing && state.mode !== 'session') {
+        html += '<div style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px">'
+          + '<div style="font-family:var(--cw-font-mono);font-size:16px;color:var(--cw-text-dim);display:flex;align-items:center;gap:8px">'
+          +   '<span style="color:var(--cw-text-faint)">$</span><span>claude</span>'
+          +   '<span style="display:inline-block;width:8px;height:16px;background:var(--cw-text-dim);opacity:0.5;animation:cw-blink 1s step-end infinite"></span>'
+          + '</div>'
+          + '<button data-cw-start="1" style="padding:10px 20px;border-radius:8px;border:1px solid rgba(217,119,87,0.3);background:rgba(217,119,87,0.08);color:#D97757;font-size:15px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:8px"><span>▶</span><span>' + escapeHtml(t('cwe_startSession')) + '</span></button>'
+          + '<div style="font-size:13px;color:var(--cw-text-faint);max-width:280px;text-align:center;line-height:1.5">'
+          +   renderCode(t('cwe_startHint'))
+          + '</div>'
+          + '</div>';
+      }
+
+      if (isCompacted) {
+        html += '<div style="margin-bottom:10px;padding:10px 12px;border-radius:6px;background:rgba(217,119,87,0.05);border:1px solid rgba(217,119,87,0.15)">'
+          + '<div style="font-size:13px;font-weight:600;color:#D97757;margin-bottom:3px">' + escapeHtml(t('cwe_afterCompactTitle')) + '</div>'
+          + '<div style="font-size:13px;color:var(--cw-text-3);line-height:1.5;font-family:var(--cw-font-mono)">'
+          +   escapeHtml(t('cwe_afterCompactStats', fmt(preCompactTotal), fmt(totalTokens), fmt(preCompactTotal - totalTokens)))
+          + '</div>'
+          + '<div style="font-size:13px;color:var(--cw-text-dim);line-height:1.5;margin-top:4px">'
+          +   escapeHtml(t('cwe_afterCompactDesc'))
+          + '</div>'
+          + '</div>';
+      }
+
+      if (state.mode !== 'session' && state.time > 0 && visible.length > 0) {
+        html += '<div style="font-size:12px;font-weight:700;color:var(--cw-text-faint);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:6px;padding-left:28px">'
+          + escapeHtml(isCompacted ? t('cwe_reloadedAfterCompact') : t('cwe_beforeYouType'))
+          + '</div>';
+      }
+      if (state.mode === 'session' && visible.length > 0) {
+        html += '<div style="font-size:12px;font-weight:700;color:var(--cw-text-faint);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:6px;padding-left:28px">'
+          + escapeHtml(t('cwe_sessionReplay'))
+          + '</div>';
+      }
+
+      if (state.time > 0 || state.mode === 'session') {
+        visible.forEach((evt, i) => {
+          const meta = KIND_META[evt.kind];
+          const isHov = state.hovIdx === i;
+          const isSel = state.selIdx === i;
+          const prevKind = i > 0 ? visible[i - 1].kind : null;
+          const isSub = evt.kind === 'sub';
+          const enteringSub = isSub && prevKind !== 'sub';
+          const leavingSub = prevKind === 'sub' && !isSub;
+          let showPhase = null;
+          if (state.mode !== 'session') {
+            if (evt.kind === 'user' && prevKind !== 'user') showPhase = t('cwe_phaseYou');
+            else if (evt.kind === 'claude' && prevKind === 'user') showPhase = t('cwe_phaseClaudeWorks');
+            else if (evt.isSummary) showPhase = t('cwe_phaseSummarized');
+          }
+          const isNewRow = isCompacted && !(evt.kind === 'auto' && evt.t < STARTUP_END);
+
+          const rowOpen = '<div' + (isNewRow ? ' class="cw-compacted-row" style="animation-delay:' + (i * 60) + 'ms"' : '') + '>';
+
+          if (showPhase) {
+            html += rowOpen + '<div style="font-size:12px;font-weight:700;color:var(--cw-text-faint);text-transform:uppercase;letter-spacing:0.6px;margin-top:14px;margin-bottom:6px;padding-left:28px">' + escapeHtml(showPhase) + '</div>';
+          } else {
+            html += rowOpen;
+          }
+
+          if (enteringSub) {
+            html += '<div style="margin-left:28px;margin-top:6px;margin-bottom:2px;padding-left:10px;border-left:2px solid rgba(155,123,196,0.4);font-size:12px;font-weight:600;color:#9B7BC4;text-transform:uppercase;letter-spacing:0.5px">' + escapeHtml(t('cwe_subagentCtxLabel')) + '</div>';
+          }
+          if (leavingSub) {
+            html += '<div style="margin-left:28px;margin-bottom:6px;padding-left:10px;padding-bottom:6px;border-left:2px solid rgba(155,123,196,0.4);font-size:12px;color:var(--cw-text-dim);font-family:var(--cw-font-mono)">↓ ' + escapeHtml(t('cwe_subagentReturned', fmt(subTotal))) + '</div>';
+          }
+
+          const dimmed = state.hovCat && evt.color !== state.hovCat;
+          const rowBg = (isSel || isHov) ? 'var(--cw-hover)' : 'transparent';
+          const outline = isSel ? '1px solid rgba(217,119,87,0.4)' : 'none';
+          const rowStyle = 'display:flex;align-items:flex-start;border-radius:6px;cursor:pointer;'
+            + 'background:' + rowBg + ';outline:' + outline + ';opacity:' + (dimmed ? 0.35 : 1) + ';'
+            + 'transition:background 0.1s,opacity 0.15s;'
+            + (isSub ? 'margin-left:28px;padding-left:10px;border-left:2px solid rgba(155,123,196,0.4);' : '');
+
+          html += '<div data-cw-item="' + i + '" style="' + rowStyle + '">';
+          const dotSz = (evt.kind === 'user' || evt.kind === 'compact') ? 10 : 7;
+          html += '<div style="width:28px;display:flex;flex-direction:column;align-items:center;padding-top:8px;flex-shrink:0">'
+            + '<div style="width:' + dotSz + 'px;height:' + dotSz + 'px;border-radius:50%;background:' + evt.color + ';opacity:' + (isHov ? 1 : 0.6) + ';transition:opacity 0.15s;' + (isHov ? 'box-shadow:0 0 8px ' + evt.color + '40' : '') + '"></div>';
+          if (i < visible.length - 1) {
+            html += '<div style="width:1.5px;flex:1;background:var(--cw-rail);margin-top:2px;min-height:6px"></div>';
+          }
+          html += '</div>';
+
+          const labelColor = isHov ? 'var(--cw-text)'
+            : evt.kind === 'user' ? '#558A42'
+            : evt.kind === 'auto' ? 'var(--cw-text-dim)' : 'var(--cw-text-2)';
+          const tok = evtTokens(evt);
+          const subTok = evtSubTokens(evt);
+          html += '<div style="flex:1;min-width:0;padding:5px 10px 5px 4px;display:flex;align-items:center;gap:8px">'
+            + '<span style="font-size:12px;font-weight:600;padding:1px 5px;border-radius:3px;background:' + meta.badgeBg + ';color:' + meta.badgeColor + ';flex-shrink:0;font-family:var(--cw-font-mono)">' + escapeHtml(t(meta.badgeKey)) + '</span>'
+            + '<span style="font-size:15px;font-family:var(--cw-font-mono);color:' + labelColor + ';flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:' + (evt.kind === 'user' ? 550 : 400) + '">' + escapeHtml(evtLabel(evt)) + '</span>';
+
+          if (tok > 0) {
+            html += '<span style="font-size:12px;font-family:var(--cw-font-mono);color:var(--cw-text-faint);flex-shrink:0">+' + fmt(tok) + '</span>';
+          }
+          if (subTok > 0) {
+            html += '<span style="font-size:12px;font-family:var(--cw-font-mono);color:#9B7BC4;flex-shrink:0;opacity:0.6">+' + fmt(subTok) + '</span>';
+          }
+          if (tok > 0) {
+            const mw = Math.min(tok / 5000 * 100, 100);
+            html += '<div style="width:50px;height:5px;border-radius:2px;background:var(--cw-track);flex-shrink:0;overflow:hidden">'
+              + '<div style="width:' + mw + '%;height:100%;background:' + evt.color + ';opacity:' + (isHov ? 0.8 : 0.4) + ';transition:opacity 0.15s"></div>'
+              + '</div>';
+          }
+          // Eye icon
+          html += '<span style="width:14px;flex-shrink:0;display:flex;justify-content:center" title="' + escapeHtml(t(VIS_META[evt.vis].labelKey)) + '">';
+          if (evt.vis !== 'hidden') {
+            const stroke = evt.vis === 'full' ? '#558A42' : 'currentColor';
+            const op = evt.vis === 'full' ? 1 : 0.5;
+            const sw = evt.vis === 'full' ? '3.5' : '3';
+            html += '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="' + stroke + '" stroke-width="' + sw + '" style="color:var(--cw-text-faint);opacity:' + op + '"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+          }
+          html += '</span>';
+          html += '</div>'; // label container
+          html += '</div>'; // row
+          html += '</div>'; // rowOpen wrapper
+        });
+      }
+
+      // Gate card — displays the fixed scripted prompt for this scenario step.
+      // Text is static (editing was removed; example events use pre-authored labels).
+      if (activeGate) {
+        const gateText = t(activeGate.gateKey);
+        const isCompact = activeGate.kind === 'compact';
+        const textSpan = '<span style="flex:1;min-width:0;font:15px var(--cw-font-mono);color:var(--cw-text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(gateText) + '</span>';
+
+        if (!isCompact) {
+          html += '<div style="padding-left:28px;margin-top:12px;padding-right:8px">'
+            + '<div style="font-size:11px;font-weight:600;color:#6BA656;font-family:var(--cw-font-mono);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;padding-left:2px">' + escapeHtml(t('cwe_youTypeHeader')) + '</div>'
+            + '<div style="display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:6px;background:rgba(85,138,66,0.06);border:1px solid rgba(85,138,66,0.2)">'
+            +   '<span style="color:#558A42;font-size:15px;font-family:var(--cw-font-mono);flex-shrink:0">❯</span>'
+            +   textSpan
+            +   '<button data-cw-gate="1" style="padding:5px 12px;border-radius:5px;border:none;background:#558A42;color:#fff;font-size:13px;font-weight:600;cursor:pointer;flex-shrink:0">'
+            +     escapeHtml(activeGate.kind === 'prompt' ? t('cwe_sendBtn') : t('cwe_runBtn'))
+            +   '</button>'
+            + '</div>'
+            + '</div>';
+        } else {
+          const barColor = (totalTokens / state.budget * 100) > 75 ? '#D97757' : (totalTokens / state.budget * 100) > 50 ? '#B8860B' : '#558A42';
+          html += '<div style="padding-left:28px;margin-top:12px;padding-right:8px">'
+            + '<div style="padding:12px 14px;border-radius:6px;background:rgba(217,119,87,0.06);border:1px solid rgba(217,119,87,0.25)">'
+            +   '<div style="font-size:13px;color:var(--cw-text-3);margin-bottom:8px;line-height:1.5">'
+            +     escapeHtml(t('cwe_compactPromptPre')) + ' <span style="font-family:var(--cw-font-mono);font-weight:600;color:' + barColor + '">' + fmt(totalTokens) + ' ' + escapeHtml(t('cwe_tokensWord')) + '</span>. '
+            +     renderCode(t('cwe_compactPromptPost'))
+            +   '</div>'
+            +   '<div style="display:flex;align-items:center;gap:8px">'
+            +     '<span style="color:#D97757;font-size:15px;font-family:var(--cw-font-mono)">❯</span>'
+            +     textSpan
+            +     '<button data-cw-gate="1" style="padding:5px 12px;border-radius:5px;border:none;background:#D97757;color:#fff;font-size:13px;font-weight:600;cursor:pointer;flex-shrink:0">' + escapeHtml(t('cwe_runBtn')) + '</button>'
+            +   '</div>'
+            + '</div>'
+            + '</div>';
+        }
+      }
+
+      timelineEl.innerHTML = html;
+    }
+
+    function renderDetail(view) {
+      const activeIdx = state.selIdx !== null ? state.selIdx : state.hovIdx;
+      const hovEvent = activeIdx !== null ? view.visible[activeIdx] : null;
+      const focusT = hovEvent ? hovEvent.t : state.time;
+      const takeaway = getTakeaway(focusT, view.isCompacted);
+      const terminalView = getTerminalView(focusT, view.isCompacted);
+
+      let html = '';
+      if (hovEvent && hovEvent.isSession) {
+        const meta = KIND_META[hovEvent.kind];
+        const pctCache = hovEvent.cumulative > 0
+          ? Math.round((hovEvent.cacheRead / hovEvent.cumulative) * 100)
+          : 0;
+        html += '<div>'
+          + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">'
+          +   '<div style="width:10px;height:10px;border-radius:3px;background:' + hovEvent.color + ';opacity:0.8"></div>'
+          +   '<span style="font-size:16px;font-weight:600">' + escapeHtml(evtLabel(hovEvent)) + '</span>'
+          + '</div>'
+          + '<div style="display:flex;width:fit-content;padding:3px 8px;border-radius:4px;margin-bottom:8px;background:' + meta.badgeBg + '">'
+          +   '<span style="font-size:12px;font-weight:600;color:' + meta.badgeColor + '">' + escapeHtml(t(meta.detailKey)) + '</span>'
+          + '</div>'
+          + '<div style="font-size:13px;color:var(--cw-text-dim);font-family:var(--cw-font-mono);margin-bottom:6px">'
+          +   escapeHtml(shortModel(hovEvent.model)) + ' · ' + escapeHtml(fmtClock(hovEvent.timestamp))
+          + '</div>'
+          + '<div style="font-size:14px;font-family:var(--cw-font-mono);color:var(--cw-text-2);margin-bottom:3px">'
+          +   escapeHtml(t('cwe_sessionCumulative')) + ': <strong>' + fmt(hovEvent.cumulative) + '</strong> ' + escapeHtml(t('cwe_tokensWord'))
+          + '</div>'
+          + '<div style="font-size:13px;font-family:var(--cw-font-mono);color:var(--cw-text-dim);margin-bottom:8px">'
+          +   escapeHtml(t('cwe_sessionDelta')) + ': ' + (hovEvent.delta >= 0 ? '+' : '') + fmt(hovEvent.delta)
+          + '</div>'
+          + '<div style="padding:8px 10px;border-radius:6px;background:var(--cw-surface-2);border:1px solid var(--cw-border);font-size:12px;line-height:1.6;color:var(--cw-text-dim);font-family:var(--cw-font-mono)">'
+          +   escapeHtml(t('cwe_sessionCache')) + ': ' + pctCache + '%<br>'
+          +   'raw: ' + fmt(hovEvent.rawInput) + ' · cache R/W: ' + fmt(hovEvent.cacheRead) + ' / ' + fmt(hovEvent.cacheCreation) + '<br>'
+          +   'out: ' + fmt(hovEvent.outputTokens)
+          + '</div>'
+          + '</div>';
+        detailEl.innerHTML = html;
+        detailEl.scrollTop = 0;
+        return;
+      }
+      if (hovEvent) {
+        const meta = KIND_META[hovEvent.kind];
+        const tok = evtTokens(hovEvent);
+        const subTok = evtSubTokens(hovEvent);
+        html += '<div>'
+          + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">'
+          +   '<div style="width:10px;height:10px;border-radius:3px;background:' + hovEvent.color + ';opacity:0.8"></div>'
+          +   '<span style="font-size:16px;font-weight:600">' + escapeHtml(evtLabel(hovEvent)) + '</span>'
+          + '</div>'
+          + '<div style="display:flex;width:fit-content;padding:3px 8px;border-radius:4px;margin-bottom:8px;background:' + meta.badgeBg + '">'
+          +   '<span style="font-size:12px;font-weight:600;color:' + meta.badgeColor + '">' + escapeHtml(t(meta.detailKey)) + '</span>'
+          + '</div>';
+        {
+          const isMeasured = hovEvent.statKey && resolveStat(hovEvent.statKey) != null;
+          if (tok > 0) {
+            const badgeLabel = isMeasured ? t('cwe_measured') : t('cwe_illustrativeTag');
+            const badgeTitle = isMeasured ? t('cwe_measuredDesc') : t('cwe_illustrativeTagDesc');
+            const badgeBg = isMeasured ? 'rgba(85,138,66,0.12)' : 'rgba(140,140,130,0.1)';
+            const badgeCol = isMeasured ? '#558A42' : 'var(--cw-text-faint)';
+            html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">'
+              + '<span style="font-size:14px;font-family:var(--cw-font-mono);color:var(--cw-text-dim)">' + fmt(tok) + ' ' + escapeHtml(t('cwe_tokensWord')) + '</span>'
+              + '<span title="' + escapeHtml(badgeTitle) + '" style="font-size:10px;font-weight:600;padding:1px 6px;border-radius:3px;background:' + badgeBg + ';color:' + badgeCol + ';text-transform:uppercase;letter-spacing:0.3px">' + escapeHtml(badgeLabel) + '</span>'
+              + '</div>';
+          } else if (isMeasured && tok === 0) {
+            html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">'
+              + '<span style="font-size:14px;font-family:var(--cw-font-mono);color:var(--cw-text-faint)">0 ' + escapeHtml(t('cwe_tokensWord')) + '</span>'
+              + '<span style="font-size:10px;font-weight:600;padding:1px 6px;border-radius:3px;background:rgba(85,138,66,0.12);color:#558A42;text-transform:uppercase;letter-spacing:0.3px">' + escapeHtml(t('cwe_measured')) + '</span>'
+              + '</div>'
+              + '<div style="font-size:12px;color:var(--cw-text-faint);margin-bottom:6px;font-style:italic">' + escapeHtml(t('cwe_zeroTokens')) + '</div>';
+          }
+        }
+        if (subTok > 0) {
+          html += '<div style="font-size:14px;font-family:var(--cw-font-mono);color:#9B7BC4;margin-bottom:6px">' + escapeHtml(t('cwe_tokensInSubagent', fmt(subTok))) + '</div>';
+        }
+        html += '<p style="font-size:15px;color:var(--cw-text-3);line-height:1.55;margin:0">' + renderCode(evtDesc(hovEvent)) + '</p>';
+
+        const visBg = hovEvent.vis === 'full' ? 'rgba(85,138,66,0.08)' : 'var(--cw-surface-2)';
+        const visBorder = hovEvent.vis === 'full' ? 'rgba(85,138,66,0.2)' : 'var(--cw-border)';
+        const dot = hovEvent.vis === 'full' ? '●' : hovEvent.vis === 'brief' ? '◐' : '○';
+        const dotCol = hovEvent.vis === 'full' ? '#558A42' : 'var(--cw-text-dim)';
+        html += '<div style="margin-top:10px;padding:8px 10px;border-radius:6px;background:' + visBg + ';border:1px solid ' + visBorder + '">'
+          + '<div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">'
+          +   '<span style="font-size:13px;color:' + dotCol + '">' + dot + '</span>'
+          +   '<span style="font-size:12px;font-weight:600;color:var(--cw-text-2)">' + escapeHtml(t(VIS_META[hovEvent.vis].labelKey)) + '</span>'
+          + '</div>'
+          + '<div style="font-size:13px;color:var(--cw-text-dim);line-height:1.4">' + escapeHtml(t(VIS_META[hovEvent.vis].subKey)) + '</div>'
+          + '</div>';
+
+        const tip = evtTip(hovEvent);
+        if (tip) {
+          html += '<div style="margin-top:10px;padding:8px 10px;border-radius:6px;background:rgba(85,138,66,0.06);border:1px solid rgba(85,138,66,0.15)">'
+            + '<div style="font-size:12px;font-weight:600;color:#558A42;margin-bottom:3px;display:flex;align-items:center;gap:4px"><span>💡</span> ' + escapeHtml(t('cwe_saveContext')) + '</div>'
+            + '<div style="font-size:13px;color:var(--cw-text-3);line-height:1.5">' + renderCode(tip) + '</div>'
+            + '</div>';
+        }
+        if (hovEvent.link) {
+          html += '<a href="' + escapeHtml(hovEvent.link) + '" target="_blank" style="display:inline-block;margin-top:10px;font-size:13px;color:#D97757;text-decoration:none;border-bottom:1px solid rgba(217,119,87,0.3)">' + escapeHtml(t('cwe_learnMore')) + '</a>';
+        }
+        html += '</div>';
+      } else {
+        html += '<div style="display:flex;flex-direction:column;align-items:center;text-align:center;gap:4px;padding:12px 0 4px">'
+          + '<div style="font-size:22px;opacity:0.2">👁</div>'
+          + '<div style="font-size:14px;font-weight:500;color:var(--cw-text-dim)">' + escapeHtml(t('cwe_hoverHintTitle')) + '</div>'
+          + '<div style="font-size:12px;color:var(--cw-text-faint);line-height:1.4;max-width:200px">' + escapeHtml(t('cwe_hoverHintDesc')) + '</div>'
+          + '</div>';
+      }
+
+      if (state.mode !== 'session') {
+        html += '<div style="padding:10px 12px;border-radius:8px;background:rgba(217,119,87,0.05);border:1px solid rgba(217,119,87,0.12)">'
+          + '<div style="font-size:11px;font-weight:700;color:#D97757;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:3px">' + escapeHtml(t('cwe_keyTakeaway')) + '</div>'
+          + '<div style="font-size:13px;color:var(--cw-text-3);line-height:1.5">' + escapeHtml(takeaway) + '</div>'
+          + '</div>';
+
+        html += '<div style="padding:10px 12px;border-radius:8px;background:var(--cw-surface-2);border:1px solid var(--cw-border)">'
+          + '<div style="font-size:11px;font-weight:700;color:var(--cw-text-dim);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:3px">' + escapeHtml(t('cwe_terminalView')) + '</div>'
+          + '<div style="font-size:13px;color:var(--cw-text-3);line-height:1.5">' + escapeHtml(terminalView) + '</div>'
+          + '</div>';
+      }
+
+      // Mixed data note — shown when we have at least one measured stat
+      const hasMeasured = stats && Object.values(stats).some((v) => v != null && v > 0);
+      if (hasMeasured && state.time > 0) {
+        html += '<div style="padding:6px 10px;border-radius:6px;font-size:11px;color:var(--cw-text-faint);line-height:1.4;display:flex;align-items:flex-start;gap:5px">'
+          + '<span style="flex-shrink:0;opacity:0.6">ℹ</span>'
+          + '<span>' + escapeHtml(t('cwe_mixedDataNote')) + '</span>'
+          + '</div>';
+      }
+
+      detailEl.innerHTML = html;
+      detailEl.scrollTop = 0;
+    }
+
+    function update() {
+      const view = computeView();
+      const pct = view.totalTokens / state.budget * 100;
+      const barColor = pct > 75 ? '#D97757' : pct > 50 ? '#B8860B' : '#558A42';
+
+      // Header tokens
+      tokensDisplay.style.color = barColor;
+      const prefix = state.mode === 'session' ? '' : '~';
+      tokensDisplay.innerHTML = prefix + fmt(view.totalTokens) + '<span style="font-size:15px;font-weight:500;margin-left:4px">' + escapeHtml(t('cwe_tokensWord')) + '</span>';
+      // Collect unique real model names for the current session (if any).
+      let modelsStr = '';
+      if (state.mode === 'session' && state.sessionEvents.length > 0) {
+        const seen = {};
+        state.sessionEvents.forEach((e) => {
+          if (!e.model) return;
+          // Skip synthetic markers Claude Code writes for tool-result pseudo-messages.
+          if (e.model.indexOf('<') >= 0 || e.model === 'unknown') return;
+          seen[shortModel(e.model)] = true;
+        });
+        modelsStr = Object.keys(seen).join(', ');
+      }
+      if (tokensSub) {
+        const tag = state.mode === 'session' ? t('cwe_measured') : t('cwe_illustrative');
+        const pctStr = pct >= 10 ? Math.round(pct) + '%' : pct.toFixed(1) + '%';
+        let text = '/ ' + fmt(state.budget) + ' (' + pctStr + ')';
+        if (modelsStr) text += ' · ' + modelsStr;
+        text += ' · ' + tag;
+        tokensSub.textContent = text;
+      }
+      // Budget help tooltip — general explanation only (size + model now inline).
+      if (budgetHelp) {
+        budgetHelp.setAttribute('data-tip', t('cwe_budgetHelp'));
+      }
+
+      // Top progress line
+      progressTop.style.width = pct + '%';
+      progressTop.style.background = barColor;
+
+      // Stacked bar
+      renderBarSegments(view);
+
+      // Legend percentages — shown as a CSS hover tooltip (data-tip attribute).
+      // Denominator is the sum over all visible blocks so percentages sum to ~100%.
+      const catTotals = {};
+      view.blocks.forEach((b) => { catTotals[b.color] = (catTotals[b.color] || 0) + b._tokens; });
+      const catSum = Object.values(catTotals).reduce((s, v) => s + v, 0) || 1;
+      legendEl.querySelectorAll('[data-cw-pct]').forEach((el) => {
+        const c = el.getAttribute('data-cw-pct');
+        const label = el.getAttribute('data-cw-label') || '';
+        const pct = ((catTotals[c] || 0) / catSum) * 100;
+        const pctStr = pct >= 10 ? pct.toFixed(0) : pct.toFixed(1);
+        const tokStr = fmt(catTotals[c] || 0);
+        el.setAttribute('data-tip', label + ': ' + pctStr + '% · ' + tokStr + ' ' + t('cwe_tokensWord'));
+      });
+
+      // Timeline + detail
+      renderTimeline(view);
+      renderDetail(view);
+
+      const gate = activeGateNow();
+      // Auto-scroll timeline
+      if (view.isCompacted) {
+        timelineEl.scrollTo({ top: 0, behavior: 'smooth' });
+      } else if (state.playing || gate) {
+        timelineEl.scrollTop = timelineEl.scrollHeight;
+      }
+
+      // Bottom progress
+      progressBottom.style.width = (state.time * 100) + '%';
+      percentEl.textContent = Math.round(state.time * 100) + '%';
+
+      // Play button icon (reuses `gate` computed earlier for focus restore)
+      playBtn.textContent = state.time >= 1 ? '↺' : state.playing ? '⏸' : '▶';
+      playBtn.setAttribute('aria-label', state.time >= 1 ? 'Restart' : gate ? 'Continue' : state.playing ? 'Pause' : 'Play');
+    }
+
+    // ── Animation loop ──
+    function startAnim() {
+      if (state.rafId) cancelAnimationFrame(state.rafId);
+      state.lastTs = null;
+      state.playing = true;
+      const tick = (ts) => {
+        if (!root.isConnected) { state.playing = false; return; }
+        if (!state.playing) return;
+        if (state.lastTs === null) state.lastTs = ts;
+        const dt = (ts - state.lastTs) / 1000;
+        state.lastTs = ts;
+        // Session mode: slow down for long timelines so each entry is legible
+        // (aim for ~1 entry per second regardless of session length).
+        const speed = state.mode === 'session'
+          ? 0.032 / Math.max(1, Math.min(6, (state.sessionEvents.length || 1) / 36))
+          : 0.032;
+        const next = state.time + dt * speed;
+        const prev = state.time;
+        const gates = activeGates();
+        const gate = gates.find((g, i) => i >= state.gatesPassed && next >= g.at && prev < g.resumeTo);
+        if (gate) {
+          state.time = gate.at;
+          state.playing = false;
+          update();
+          return;
+        }
+        if (next >= 1) {
+          state.time = 1;
+          state.playing = false;
+          update();
+          return;
+        }
+        state.time = next;
+        update();
+        state.rafId = requestAnimationFrame(tick);
+        window._cwRafId = state.rafId;
+      };
+      state.rafId = requestAnimationFrame(tick);
+      window._cwRafId = state.rafId;
+      update();
+    }
+
+    function sendGate() {
+      const gate = activeGateNow();
+      if (!gate) return;
+      const isCompact = gate.kind === 'compact';
+      state.gatesPassed += 1;
+      state.time = gate.resumeTo;
+      state.selIdx = null;
+      state.hovIdx = null;
+      if (!isCompact) startAnim(); else { state.playing = false; update(); }
+    }
+
+    function togglePlay() {
+      if (state.time >= 1) {
+        state.time = 0;
+        state.gatesPassed = 0;
+        state.selIdx = null;
+        state.hovIdx = null;
+        startAnim();
+        return;
+      }
+      if (activeGateNow()) { sendGate(); return; }
+      if (state.playing) { state.playing = false; update(); } else { startAnim(); }
+    }
+
+    // ── Event wiring ──
+    root.addEventListener('click', (e) => {
+      state.hasInteracted = true;
+      const startBtn = e.target.closest('[data-cw-start]');
+      if (startBtn) { startAnim(); return; }
+      const gateBtn = e.target.closest('[data-cw-gate]');
+      if (gateBtn) { sendGate(); return; }
+      const item = e.target.closest('[data-cw-item]');
+      if (item) {
+        const i = parseInt(item.getAttribute('data-cw-item'), 10);
+        state.selIdx = state.selIdx === i ? null : i;
+        update();
+        return;
+      }
+      const block = e.target.closest('[data-cw-block]');
+      if (block) {
+        const i = parseInt(block.getAttribute('data-cw-block'), 10);
+        state.selIdx = state.selIdx === i ? null : i;
+        update();
+        return;
+      }
+    });
+
+    root.addEventListener('mouseover', (e) => {
+      const item = e.target.closest('[data-cw-item]');
+      if (item) { state.hovIdx = parseInt(item.getAttribute('data-cw-item'), 10); update(); return; }
+      const block = e.target.closest('[data-cw-block]');
+      if (block) { state.hovIdx = parseInt(block.getAttribute('data-cw-block'), 10); update(); return; }
+      const leg = e.target.closest('[data-cw-legend]');
+      if (leg) {
+        state.hovCat = leg.getAttribute('data-cw-legend');
+        update();           // refreshes data-tip with fresh percentages
+        showFloatTipFor(leg);
+        return;
+      }
+    });
+
+    root.addEventListener('mouseout', (e) => {
+      const leaving = e.relatedTarget;
+      if (e.target.closest('[data-cw-item]') || e.target.closest('[data-cw-block]')) {
+        if (!leaving || !leaving.closest || (!leaving.closest('[data-cw-item]') && !leaving.closest('[data-cw-block]'))) {
+          state.hovIdx = null; update();
+        }
+      }
+      if (e.target.closest('[data-cw-legend]')) {
+        if (!leaving || !leaving.closest || !leaving.closest('[data-cw-legend]')) {
+          state.hovCat = null; update();
+          hideFloatTip();
+        }
+      }
+    });
+
+    // ── Mode + session combobox wiring ──
+    const replayableSessions = listReplayableSessions();
+
+    // Combobox state
+    const ui = {
+      search: '',       // current filter query
+      sort: 'recent'    // 'recent' | 'turns'
+    };
+
+    function formatSessionOption(s) {
+      const d = new Date(s.maxTs);
+      const pad = (n) => (n < 10 ? '0' + n : '' + n);
+      const dayNames = (t('dayNames') || 'Sun,Mon,Tue,Wed,Thu,Fri,Sat').split(',');
+      const dateStr = (d.getMonth() + 1) + '/' + d.getDate() + ' ' + (dayNames[d.getDay()] || '')
+        + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+      const snippet = (s.firstPrompt && s.firstPrompt.text) ? s.firstPrompt.text : s.id;
+      return { snippet: snippet, dateStr: dateStr, turns: s.count };
+    }
+
+    // Apply search / sort / global period to produce the visible session list.
+    // The date range comes from the left-panel period filter (currentPeriod /
+    // customDateRange) — same knob that drives the rest of the dashboard.
+    function sessionInGlobalPeriod(s) {
+      if (customDateRange) {
+        return s.maxTs >= customDateRange.start.getTime() && s.maxTs <= customDateRange.end.getTime();
+      }
+      if (currentPeriod === 0) return true;
+      const cutoff = new Date();
+      cutoff.setDate(cutoff.getDate() - (currentPeriod - 1));
+      cutoff.setHours(0, 0, 0, 0);
+      return s.maxTs >= cutoff.getTime();
+    }
+    function filteredSessions() {
+      const q = ui.search.trim().toLowerCase();
+      let list = replayableSessions.filter((s) => {
+        if (!sessionInGlobalPeriod(s)) return false;
+        if (!q) return true;
+        const txt = ((s.firstPrompt && s.firstPrompt.text) || '').toLowerCase();
+        return txt.indexOf(q) >= 0 || s.id.toLowerCase().indexOf(q) >= 0;
+      });
+      if (ui.sort === 'turns') {
+        list = list.slice().sort((a, b) => b.count - a.count);
+      } else {
+        list = list.slice().sort((a, b) => b.maxTs - a.maxTs);
+      }
+      return list;
+    }
+
+    function renderSessionList() {
+      const list = filteredSessions();
+      if (list.length === 0) {
+        sessionList.innerHTML = '<div style="padding:12px 14px;font-size:12px;color:var(--cw-text-faint)">' + escapeHtml(t('cwe_noMatch')) + '</div>';
+        return;
+      }
+      const html = list.map((s) => {
+        const f = formatSessionOption(s);
+        const active = s.id === state.sessionId;
+        const bg = active ? 'rgba(217,119,87,0.08)' : 'transparent';
+        return '<div data-cw-pick="' + escapeHtml(s.id) + '" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--cw-border);background:' + bg + '">'
+          +   '<div style="font-size:13px;color:var(--cw-text-2);line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(f.snippet) + '</div>'
+          +   '<div style="font-size:11px;color:var(--cw-text-faint);font-family:var(--cw-font-mono);margin-top:2px">' + escapeHtml(f.dateStr) + ' · ' + f.turns + ' ' + escapeHtml(t('cwe_sessionTurns')) + '</div>'
+          + '</div>';
+      }).join('');
+      sessionList.innerHTML = html;
+    }
+
+    function openSessionList() {
+      if (replayableSessions.length === 0) return;
+      renderSessionList();
+      sessionList.style.display = 'block';
+    }
+    function closeSessionList() { sessionList.style.display = 'none'; }
+
+    function applySessionInputLabel() {
+      const cur = replayableSessions.find((s) => s.id === state.sessionId);
+      if (cur) {
+        const f = formatSessionOption(cur);
+        sessionInput.value = f.snippet + '  —  ' + f.dateStr;
+      } else {
+        sessionInput.value = '';
+      }
+    }
+
+    function selectSession(sessionId) {
+      const events = buildSessionEvents(sessionId);
+      state.sessionId = sessionId;
+      state.sessionEvents = events;
+      state.sessionLabelStash = null; // new selection — discard any stashed previous label
+      ui.search = '';
+      // Bump the budget to 1M for sessions whose peak cumulative exceeds 200K
+      // (those sessions must have been on a 1m-context model).
+      const peak = events.reduce((m, e) => e.cumulative > m ? e.cumulative : m, 0);
+      state.budget = peak > MAX ? BIG_MAX : MAX;
+      // Default to "full view": show the whole timeline immediately.
+      state.time = 1;
+      state.gatesPassed = 0;
+      state.selIdx = null;
+      state.hovIdx = null;
+      state.playing = false;
+      applySessionInputLabel();
+      closeSessionList();
+      update();
+      // Persist selection in the URL so refresh keeps the user on this session.
+      contextSubPath = sessionId;
+      try { pushState(false); } catch (e) { /* ignore */ }
+    }
+
+    function updateSortStyling() {
+      sortBtns.forEach((b) => {
+        const active = b.getAttribute('data-cw-sort') === ui.sort;
+        b.style.background = active ? 'var(--cw-bg)' : 'transparent';
+        b.style.color = active ? 'var(--cw-text)' : 'var(--cw-text-2)';
+        b.style.boxShadow = active ? '0 1px 3px rgba(0,0,0,0.08)' : 'none';
+      });
+    }
+
+    function setMode(mode) {
+      if (mode === state.mode) return;
+      if (mode === 'session' && replayableSessions.length === 0) return;
+      state.mode = mode;
+      state.time = 0;
+      state.gatesPassed = 0;
+      state.selIdx = null;
+      state.hovIdx = null;
+      state.playing = false;
+      state.hasInteracted = true;
+      modeBtns.forEach((b) => {
+        const active = b.getAttribute('data-cw-mode') === mode;
+        b.style.background = active ? 'var(--cw-bg)' : 'transparent';
+        b.style.color = active ? 'var(--cw-text)' : 'var(--cw-text-2)';
+        b.style.boxShadow = active ? '0 1px 3px rgba(0,0,0,0.08)' : 'none';
+      });
+      if (mode === 'session') {
+        sessionTools.style.display = 'inline-flex';
+        bottomBar.style.display = 'none';
+        // Bar hidden → give cw-main the same 16px bottom that the bar used to provide.
+        mainEl.style.paddingBottom = '16px';
+        // Entering session mode always starts fresh — nothing selected,
+        // input shows only the placeholder. User must pick a session.
+        state.sessionId = null;
+        state.sessionEvents = [];
+        state.sessionLabelStash = null;
+        state.budget = MAX;
+        sessionInput.value = '';
+        ui.search = '';
+        update();
+        // Persist mode so refresh keeps the user on the session tab even without a pick.
+        contextSubPath = 'session';
+        try { pushState(false); } catch (e) { /* ignore */ }
+      } else {
+        sessionTools.style.display = 'none';
+        bottomBar.style.display = 'flex';
+        mainEl.style.paddingBottom = '0';
+        state.budget = MAX;
+        closeSessionList();
+        update();
+        contextSubPath = '';
+        try { pushState(false); } catch (e) { /* ignore */ }
+      }
+    }
+
+    // Initialize empty-state hint
+    if (replayableSessions.length === 0) {
+      sessionEmpty.style.display = 'inline';
+      modeBtns.forEach((b) => {
+        if (b.getAttribute('data-cw-mode') === 'session') {
+          b.disabled = true;
+          b.style.opacity = '0.4';
+          b.style.cursor = 'not-allowed';
+        }
+      });
+    }
+
+    // Restore session state from contextSubPath so re-renders (e.g. scope /
+    // period changes) don't bounce the user back to example mode.
+    // `pendingContextSid` was only used by the original deep-link path; we now
+    // rely on the module-level `contextSubPath` which is kept in sync by
+    // setMode() / selectSession() / applyHash().
+    pendingContextSid = null;
+    const deepLinkSid = contextSubPath;
+    if (deepLinkSid === 'session' && replayableSessions.length > 0) {
+      state.mode = 'session';
+      sessionTools.style.display = 'inline-flex';
+      bottomBar.style.display = 'none';
+      mainEl.style.paddingBottom = '16px';
+    } else if (deepLinkSid && replayableSessions.some((s) => s.id === deepLinkSid)) {
+      state.mode = 'session';
+      sessionTools.style.display = 'inline-flex';
+      bottomBar.style.display = 'none';
+      mainEl.style.paddingBottom = '16px';
+      selectSession(deepLinkSid);
+    }
+
+    // Initialize mode + sort tab styling on first render.
+    modeBtns.forEach((b) => {
+      const active = b.getAttribute('data-cw-mode') === state.mode;
+      if (active) {
+        b.style.background = 'var(--cw-bg)';
+        b.style.color = 'var(--cw-text)';
+        b.style.boxShadow = '0 1px 3px rgba(0,0,0,0.08)';
+      }
+    });
+    updateSortStyling();
+
+    modeBtns.forEach((b) => {
+      b.addEventListener('click', () => setMode(b.getAttribute('data-cw-mode')));
+    });
+
+    // Combobox interactions
+    // When a session is selected, any re-interaction (focus via Tab, or mousedown
+    // while the input is already focused) should clear the value. We use mousedown
+    // AND focus because focus does not re-fire on already-focused inputs.
+    function clearInputIfSessionPicked() {
+      if (state.sessionId && sessionInput.value && !state.sessionLabelStash) {
+        state.sessionLabelStash = sessionInput.value;
+        sessionInput.value = '';
+        ui.search = '';
+      }
+    }
+    sessionInput.addEventListener('focus', () => {
+      clearInputIfSessionPicked();
+      openSessionList();
+    });
+    sessionInput.addEventListener('mousedown', () => {
+      clearInputIfSessionPicked();
+      openSessionList();
+    });
+    sessionInput.addEventListener('input', () => {
+      ui.search = sessionInput.value;
+      openSessionList();
+    });
+    sessionInput.addEventListener('blur', () => {
+      // If the user blurred without actually picking a new session, restore the
+      // previous label. selectSession() clears the stash on successful selection,
+      // so when stash is still set here it means "no new pick happened".
+      if (state.sessionLabelStash) {
+        sessionInput.value = state.sessionLabelStash;
+        ui.search = '';
+      }
+      state.sessionLabelStash = null;
+    });
+    sessionInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { closeSessionList(); sessionInput.blur(); }
+      else if (e.key === 'Enter') {
+        const first = sessionList.querySelector('[data-cw-pick]');
+        if (first) selectSession(first.getAttribute('data-cw-pick'));
+      }
+    });
+    sessionList.addEventListener('mousedown', (e) => {
+      // mousedown (not click) so the input doesn't lose focus before we select.
+      const row = e.target.closest('[data-cw-pick]');
+      if (!row) return;
+      e.preventDefault();
+      selectSession(row.getAttribute('data-cw-pick'));
+    });
+    document.addEventListener('mousedown', (e) => {
+      if (!sessionTools.contains(e.target)) closeSessionList();
+    });
+
+    sortBtns.forEach((b) => {
+      b.addEventListener('click', () => {
+        ui.sort = b.getAttribute('data-cw-sort');
+        updateSortStyling();
+        if (sessionList.style.display === 'block') renderSessionList();
+      });
+    });
+
+    playBtn.addEventListener('click', togglePlay);
+    const skipBtn = document.getElementById('cw-skip');
+    if (skipBtn) skipBtn.addEventListener('click', () => {
+      state.playing = false;
+      if (state.rafId) { cancelAnimationFrame(state.rafId); state.rafId = null; }
+      // In example mode, jump to the current gate rather than past it.
+      const nextGate = activeGates().find((g, i) => i >= state.gatesPassed);
+      if (state.mode === 'example' && nextGate) {
+        state.time = nextGate.at;
+      } else {
+        state.time = 1;
+      }
+      update();
+    });
+    fsBtn.addEventListener('click', () => {
+      if (document.fullscreenElement) document.exitFullscreen();
+      else root.requestFullscreen && root.requestFullscreen().catch(() => {});
+    });
+    window._cwFsHandler = () => {
+      state.isFullscreen = !!document.fullscreenElement;
+      fsBtn.textContent = state.isFullscreen ? '⤡' : '⛶';
+    };
+    document.addEventListener('fullscreenchange', window._cwFsHandler);
+
+    // Keyboard: Space
+    window._cwKeyHandler = (e) => {
+      if (!root.isConnected) return;
+      const tag = e.target.tagName;
+      if (tag === 'INPUT' || tag === 'BUTTON' || tag === 'TEXTAREA' || tag === 'SELECT' || e.target.isContentEditable) return;
+      const rect = root.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0) return;
+      if (rect.bottom < 0 || rect.top > window.innerHeight) return;
+      if (e.code === 'Space') {
+        if (!state.hasInteracted) return;
+        e.preventDefault();
+        togglePlay();
+      }
+    };
+    window.addEventListener('keydown', window._cwKeyHandler);
+
+    update();
   }
 
   // ── Category overview page ──

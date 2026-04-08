@@ -560,17 +560,27 @@ async function parseTranscriptFile(jsonlPath, cutoffMs) {
         if (tsMs) lastHumanTs[sid] = tsMs;
         const msg = entry.message;
         let charLen = 0;
+        let fullText = '';
         if (typeof msg === 'string') {
           charLen = msg.length;
+          fullText = msg;
         } else if (msg && typeof msg === 'object') {
           const content = msg.content;
-          if (typeof content === 'string') charLen = content.length;
+          if (typeof content === 'string') { charLen = content.length; fullText = content; }
           else if (Array.isArray(content)) {
-            content.forEach(c => { if (c.type === 'text' && c.text) charLen += c.text.length; });
+            content.forEach(c => {
+              if (c.type === 'text' && c.text) {
+                charLen += c.text.length;
+                if (!fullText) fullText = c.text;
+              }
+            });
           }
         }
-        if (charLen > 0) {
-          promptStats.push({ timestamp: tsMs || entry.timestamp, charLen, sessionId: entry.sessionId ?? null });
+        // Skip tool-result and system-reminder pseudo-prompts so the preview is a real user message.
+        const isToolResult = /^<(tool_use_result|command-stdout|command-stderr|system-reminder|local-command-stdout)/i.test(fullText.trimStart());
+        if (charLen > 0 && !isToolResult) {
+          const preview = fullText.replace(/\s+/g, ' ').trim().slice(0, 60);
+          promptStats.push({ timestamp: tsMs || entry.timestamp, charLen, sessionId: entry.sessionId ?? null, preview });
         }
         continue;
       }
