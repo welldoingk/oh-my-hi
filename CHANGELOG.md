@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.5.0] - 2026-04-08
+
+### Added
+- **Context Explorer: Real Session Mode** — new `실제 세션` tab that replays any recorded session's actual token usage on the timeline. Click to switch from the example scenario to a real session from your transcript history.
+- Session search combobox with prompt-text previews, autocomplete filtering, and two sort modes (`Recent` / `Most turns`).
+- Session list integrates with the left-panel global period filter (no separate date dropdown).
+- Dynamic context budget — automatically switches between 200K and 1M based on the selected session's peak cumulative tokens (for 1M-context models like `claude-opus-4-6[1m]`).
+- Header now shows peak cumulative tokens, current budget, percentage, and the unique model name(s) used in the session.
+- Legend hover reveals a floating tooltip with the category's percentage share and token count; uses body-level positioning so edge items never clip against the container.
+- Help tooltip explains how the context budget varies per session (model window size).
+- Turns sort button has a hover tooltip explaining what "턴" counts (every assistant API response, including each tool invocation).
+- URL-hash state persistence (`#context/session`, `#context/{sessionId}`) — refresh, scope change, and period change all preserve the selected session.
+- Session events get distinct kind badges (skill / mcp / agent / tool) instead of all showing "claude".
+- Parser: `promptStats` now carries a 60-char preview text (with tool-result messages filtered out) so session lists can show recognizable first-prompt snippets.
+
+### Changed
+- `fmt()` now formats values ≥1M with the `M` suffix (e.g. `1M`, `1.2M`).
+- Example-mode gate cards now show static prompt text instead of editable inputs.
+- Example-mode is polished: kept for instruction, but playback state (`typedTexts`, `gateFocusWanted`, `replayMode`) removed along with the input-restore plumbing.
+- `.cw-root` height pinned to `calc(100vh - 64px)` with a `min-height: 850px` and balanced 16 px top/bottom padding.
+- Top/bottom paddings matched for visual symmetry.
+- Stacked bar in session mode is now scaled so its total width equals peak-cumulative/budget, matching the header number exactly. Removed the 0.15%-minimum width clamp that used to inflate the bar on long sessions.
+- Terminal-visibility eye icon thicker stroke: `full`=3.5, `brief`=3.
+
+### Fixed
+- Session list previously reverted to example mode whenever the global period filter was changed. `contextSubPath` module-level state now keeps session selection across any re-render.
+- Re-clicking an already-focused search input now clears the value (was a no-op because focus does not re-fire).
+- Legend tooltips on the leftmost category ("System") no longer get clipped by `.cw-root { overflow: hidden }` — switched to a body-level floating tooltip with viewport clamping.
+
 ## [0.4.7] - 2026-04-04
 
 ### Fixed

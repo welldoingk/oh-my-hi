@@ -142,6 +142,27 @@ Visual overview of your harness architecture.
 
 ---
 
+### 🪟 Context Explorer
+
+Interactive simulator that shows what fills the Claude Code context window during a session. Two modes:
+
+| Mode | What it shows |
+|------|---------------|
+| **Example Session** | A scripted 36-step walkthrough ported from the official docs. Startup values (`CLAUDE.md`, memory, skills, MCP) are your real measured numbers; the rest are illustrative. Use it to understand how a typical session accumulates context. |
+| **Real Session** | Pick any real session from your transcript history and replay its actual token usage on the timeline. The search box autocompletes against the first user prompt of each session; sort by recency or total turns. |
+
+**Highlights in Real Session mode**:
+
+- **Dynamic context budget** — the header automatically switches between `200K` and `1M` depending on the peak cumulative input tokens seen in the session (1M-context model variants like `claude-opus-4-6[1m]` trigger the larger budget).
+- **Peak-based total** — the header shows the maximum context size reached, not the final entry; this stays meaningful after mid-session `/compact` events.
+- **Category legend with hover tooltips** showing each category's percentage share and token count.
+- **Detailed per-turn panel** with model, timestamp, cumulative context size, delta, and cache hit ratio.
+- **URL persistence** — `#context/{sessionId}` lets you bookmark or refresh without losing state. Changing the sidebar period, scope, or language keeps the selected session.
+
+Navigation: click 🪟 `Context Explorer` in the sidebar, or use the deep link `#context` (example mode), `#context/session` (session mode, no selection), or `#context/{sessionId}` (session mode, specific session).
+
+---
+
 ### Category Pages
 
 Click any category in the sidebar (Skills, Agents, Plugins, Hooks, etc.) to see a dedicated page for that category.
