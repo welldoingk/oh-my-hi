@@ -5031,10 +5031,14 @@
     timelineEl.addEventListener('scroll', updateVirtualRows, { passive: true });
 
     sortBtns.forEach((b) => {
+      b.addEventListener('mousedown', (e) => {
+        // Prevent input blur so the session list stays open and label stash is not restored.
+        e.preventDefault();
+      });
       b.addEventListener('click', () => {
         ui.sort = b.getAttribute('data-cw-sort');
         updateSortStyling();
-        if (sessionList.style.display === 'flex') renderSessionList();
+        if (sessionList.style.display !== 'none') renderSessionList();
       });
     });
 
