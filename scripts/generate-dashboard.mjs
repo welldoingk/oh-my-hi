@@ -138,7 +138,10 @@ async function runUpdate() {
     }
     console.log(`oh-my-hi: v${latest} available`);
     console.log(`oh-my-hi: updating v${pkg.version} → v${latest}...`);
-    execSync(`claude plugin update ${pkg.name}@${marketplace}`, { stdio: 'inherit' });
+    execSync(`claude plugin update ${pkg.name}@${marketplace}`, {
+      stdio: 'inherit',
+      env: { ...process.env, CLAUDE_CONFIG_DIR },
+    });
     console.log(`oh-my-hi: ✅ updated to v${latest}`);
   } catch (e) {
     if (e.name === 'AbortError') console.log('oh-my-hi: ❌ network timeout');
@@ -699,14 +702,18 @@ function writeHtml(indexPath, systemLocale) {
 }
 
 /**
- * Check if index.html needs rebuild (missing or version mismatch).
+ * Check if index.html needs rebuild (missing, version mismatch, or template newer than output).
  */
 function needsHtmlRebuild(indexPath) {
   if (!fs.existsSync(indexPath)) return true;
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf-8'));
     const html = fs.readFileSync(indexPath, 'utf-8');
-    return !html.includes(pkg.version);
+    if (!html.includes(pkg.version)) return true;
+    // Rebuild if any template file is newer than the output
+    const outMtime = fs.statSync(indexPath).mtimeMs;
+    const templateFiles = ['app.js', 'styles.css', 'dashboard.html'].map(f => path.join(TEMPLATES, f));
+    return templateFiles.some(f => fs.existsSync(f) && fs.statSync(f).mtimeMs > outMtime);
   } catch { return true; }
 }
 
@@ -737,7 +744,8 @@ function openOrRefreshBrowser(filePath) {
   const fileUrl = 'file://' + filePath.replace(/ /g, '%20');
   const needle = 'oh-my-hi';
 
-  // Try Chrome first, then Safari, then fallback to open
+  // Try to reuse an existing tab in Chrome or Safari (tab refresh).
+  // If no existing tab is found, fall back to the system default browser.
   const chromeScript = `
     tell application "System Events"
       if not (exists process "Google Chrome") then return "not_running"
@@ -782,22 +790,14 @@ function openOrRefreshBrowser(filePath) {
   try {
     const chromeResult = execSync(`osascript -e '${chromeScript.replace(/'/g, "'\"'\"'")}'`, { encoding: 'utf8' }).trim();
     if (chromeResult === 'refreshed') return;
-    if (chromeResult === 'not_found') {
-      execSync(`open -a "Google Chrome" "${filePath}"`);
-      return;
-    }
   } catch { /* Chrome not available */ }
 
   try {
     const safariResult = execSync(`osascript -e '${safariScript.replace(/'/g, "'\"'\"'")}'`, { encoding: 'utf8' }).trim();
     if (safariResult === 'refreshed') return;
-    if (safariResult === 'not_found') {
-      execSync(`open -a "Safari" "${filePath}"`);
-      return;
-    }
   } catch { /* Safari not available */ }
 
-  // Fallback
+  // No existing tab found — open with system default browser
   try { execSync(`open "${filePath}"`); } catch {
     console.log('Please open manually in your browser:', filePath);
   }
@@ -967,11 +967,31 @@ function computeContextStats(scopeData, globalConfigDir, scope) {
     if (fs.existsSync(gp)) globalClaudeTokens = estimateTokens(fs.readFileSync(gp, 'utf-8'));
   } catch { /* ignore */ }
 
-  // Project CLAUDE.md: only for project scopes. Look at configFiles (already parsed with body).
+  // Project CLAUDE.md: sum all project-scope config files (project root + .claude/ subdir).
   let projectClaudeTokens = 0;
   if (scope.type === 'project') {
-    const proj = (scopeData.configFiles || []).find((f) => f.scope === 'project' && (f.name === 'CLAUDE.md' || f.name === 'CLAUDE.md (project)'));
-    if (proj && proj.body) projectClaudeTokens = estimateTokens(proj.body);
+    for (const f of (scopeData.configFiles || [])) {
+      if (f.scope === 'project' && f.body &&
+          (f.name === 'CLAUDE.md' || f.name === 'CLAUDE.md (project)' || f.name === 'CLAUDE.md (.claude)' ||
+           f.name === 'AGENTS.md' || f.name === 'AGENTS.md (project)' || f.name === 'AGENTS.md (.claude)')) {
+        projectClaudeTokens += estimateTokens(f.body);
+      }
+    }
+    // Also walk parent directories up to HOME for CLAUDE.md / AGENTS.md.
+    // Claude Code loads instruction files from every ancestor directory up to the home dir.
+    if (scope.projectPath) {
+      const homeDir = process.env.HOME || '';
+      let dir = path.dirname(scope.projectPath);
+      while (dir && dir !== homeDir && dir !== path.dirname(dir)) {
+        for (const name of ['CLAUDE.md', 'AGENTS.md']) {
+          const fp = path.join(dir, name);
+          try {
+            if (fs.existsSync(fp)) projectClaudeTokens += estimateTokens(fs.readFileSync(fp, 'utf-8'));
+          } catch { /* skip */ }
+        }
+        dir = path.dirname(dir);
+      }
+    }
   }
 
   // Auto memory (MEMORY.md) — only exists for project scopes under configPath/memory/MEMORY.md.
@@ -992,9 +1012,17 @@ function computeContextStats(scopeData, globalConfigDir, scope) {
   // Add a small per-skill framing overhead (~10 tokens) to match observed context cost.
   skillsDescTokens += skills.length * 10;
 
-  // MCP tool listing (deferred): just names + small schema trailer. Estimate ~15 tokens per server.
+  // MCP tool listing (deferred): estimate ~50 tokens per server (server name + typical tool names).
+  // Actual cost depends on the number of tools each server exposes, which isn't known at build time.
   const mcpServersCount = (scopeData.mcpServers || []).length;
-  const mcpToolsTokens = mcpServersCount * 15;
+  const mcpToolsTokens = mcpServersCount * 50;
+
+  // Principles: always-on instruction files loaded alongside CLAUDE.md at startup.
+  const principles = scopeData.principles || [];
+  let principlesTokens = 0;
+  for (const p of principles) {
+    if (p.body) principlesTokens += estimateTokens(p.body);
+  }
 
   return {
     globalClaudeTokens,
@@ -1004,6 +1032,7 @@ function computeContextStats(scopeData, globalConfigDir, scope) {
     skillsDescTokens,
     mcpServersCount,
     mcpToolsTokens,
+    principlesTokens,
     scopeType: scope.type,
   };
 }

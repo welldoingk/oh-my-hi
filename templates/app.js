@@ -2984,6 +2984,33 @@
       + '<h1>❓ ' + t('helpTitle') + ' <a href="https://github.com/netil/oh-my-hi" target="_blank" style="font-size:14px;font-weight:400;color:var(--text-secondary);text-decoration:none;vertical-align:middle;margin-left:8px">GitHub ↗</a></h1>'
       + '</div>';
 
+    // Context Explorer
+    html += '<div class="section">'
+      + '<div class="section-title">🪟 ' + t('helpContextExplorer') + '</div>'
+      + '<div class="card" style="padding:16px 20px">'
+      + '<p style="margin:0 0 12px;font-size:14px;color:var(--text-secondary);line-height:1.6">' + t('helpContextExplorerDesc') + '</p>'
+      + '<div class="help-list" style="border:none;padding:0;margin:0">'
+      + helpRow('helpCweSession', 'helpCweSessionDesc', '⏵')
+      + helpRow('helpCweExample', 'helpCweExampleDesc', '▶')
+      + helpRow('helpCweBar', 'helpCweBarDesc', '▬')
+      + helpRow('helpCweTimeline', 'helpCweTimelineDesc', '⋮')
+      + '</div>'
+      + '<div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">'
+      + '<a href="#context" style="font-size:13px;font-weight:600;color:var(--accent);text-decoration:none">→ ' + t('helpContextExplorer') + '</a>'
+      + '</div>'
+      + '</div></div>';
+
+    // Token & usage parsing
+    html += '<div class="section">'
+      + '<div class="section-title">🪙 ' + t('tokens') + ' & ' + t('activity') + '</div>'
+      + '<div class="card help-list">'
+      + helpRow('helpTokens', 'helpTokensDesc', '🪙')
+      + helpRow('helpPromptStats', 'helpPromptStatsDesc', '📝')
+      + helpRow('helpLatency', 'helpLatencyDesc', '⏱️')
+      + helpRow('helpActivity', 'helpActivityDesc', '📊')
+      + helpRow('helpCommands', 'helpCommandsDesc', '⌨️')
+      + '</div></div>';
+
     // Parameters
     html += '<div class="section">'
       + '<div class="section-title">' + t('helpParams') + '</div>'
@@ -3016,17 +3043,6 @@
       + helpRow('helpPlans', 'helpPlansDesc', '📋')
       + helpRow('helpTodos', 'helpTodosDesc', '✅')
       + helpRow('helpScopes', 'helpScopesDesc', '🗂️')
-      + '</div></div>';
-
-    // Token & usage parsing
-    html += '<div class="section">'
-      + '<div class="section-title">🪙 ' + t('tokens') + ' & ' + t('activity') + '</div>'
-      + '<div class="card help-list">'
-      + helpRow('helpTokens', 'helpTokensDesc', '🪙')
-      + helpRow('helpPromptStats', 'helpPromptStatsDesc', '📝')
-      + helpRow('helpLatency', 'helpLatencyDesc', '⏱️')
-      + helpRow('helpActivity', 'helpActivityDesc', '📊')
-      + helpRow('helpCommands', 'helpCommandsDesc', '⌨️')
       + '</div></div>';
 
     html += '<div class="generated-at">oh-my-hi v' + __VERSION__ + ' · <a href="https://github.com/netil/oh-my-hi" target="_blank" style="color:inherit">GitHub</a></div>';
@@ -3482,12 +3498,13 @@
       entries.forEach((e) => {
         const sid = e.sessionId;
         if (!sid) return;
-        if (!map[sid]) map[sid] = { id: sid, count: 0, minTs: Infinity, maxTs: 0, firstPrompt: null };
+        if (!map[sid]) map[sid] = { id: sid, count: 0, minTs: Infinity, maxTs: 0, firstPrompt: null, model: null, peakTokens: 0 };
         const s = map[sid];
         s.count += 1;
         const ts = typeof e.timestamp === 'number' ? e.timestamp : new Date(e.timestamp).getTime();
         if (ts < s.minTs) s.minTs = ts;
-        if (ts > s.maxTs) s.maxTs = ts;
+        if (ts > s.maxTs) { s.maxTs = ts; s.model = e.model || s.model; }
+        if ((e.inputTokens || 0) > s.peakTokens) s.peakTokens = e.inputTokens || 0;
       });
       // Pull the earliest promptStats text for each session (if the parser captured it).
       prompts.forEach((p) => {
@@ -3582,7 +3599,86 @@
         });
         prevInput = cumulative;
       });
-      return out;
+
+      // Prepend synthetic startup context events estimated from contextStats.
+      // These represent items auto-loaded before the first turn (CLAUDE.md, memory, skills, MCP)
+      // that are baked into the first entry's inputTokens but not broken out in the transcript.
+      const cs = getScopeData().contextStats || {};
+      const startupDefs = [
+        { key: 'globalClaudeTokens',  color: '#6A9BCC', label: t('cwe_ev6_label') },
+        { key: 'projectClaudeTokens', color: '#6A9BCC', label: t('cwe_ev7_label') },
+        { key: 'autoMemoryTokens',    color: '#E8A45C', label: t('cwe_ev2_label') },
+        { key: 'skillsDescTokens',    color: '#D4A843', label: t('cwe_ev5_label') },
+        { key: 'mcpToolsTokens',      color: '#9B7BC4', label: t('cwe_ev4_label') },
+        { key: 'principlesTokens',    color: '#4f46e5', label: t('catPrinciples') },
+      ];
+      const synthetic = [];
+      let syntheticTotal = 0;
+      startupDefs.forEach((def, i) => {
+        const toks = cs[def.key] || 0;
+        if (toks <= 0) return;
+        syntheticTotal += toks;
+        synthetic.push({
+          isSession: true,
+          isSynthetic: true,
+          id: -(9000 + i),
+          t: -(startupDefs.length - synthetic.length) * 0.001,
+          kind: 'auto',
+          tokens: toks,
+          color: def.color,
+          vis: 'hidden',
+          link: null,
+          cumulative: 0,
+          delta: toks,
+          model: null,
+          timestamp: null,
+          contextName: def.label,
+          rawInput: 0,
+          cacheRead: 0,
+          cacheCreation: 0,
+          outputTokens: 0
+        });
+      });
+
+      // Estimate system prompt + environment info as the residual of the first entry
+      // (first entry's inputTokens − rawInput − measured startup items).
+      // This captures internal Claude Code context that isn't directly measurable.
+      if (entries.length > 0) {
+        const firstRawInput = entries[0].rawInput || 0;
+        const firstInputTokens = entries[0].inputTokens || 0;
+        const residual = Math.max(0, firstInputTokens - firstRawInput - syntheticTotal);
+        if (residual > 200) {
+          syntheticTotal += residual;
+          synthetic.unshift({
+            isSession: true,
+            isSynthetic: true,
+            id: -8999,
+            t: -(synthetic.length + 2) * 0.001,
+            kind: 'auto',
+            tokens: residual,
+            color: '#6B6964',
+            vis: 'hidden',
+            link: null,
+            cumulative: 0,
+            delta: residual,
+            model: null,
+            timestamp: null,
+            contextName: t('cwe_ev1_label') + ' · ' + t('cwe_ev3_label'),
+            rawInput: 0,
+            cacheRead: 0,
+            cacheCreation: 0,
+            outputTokens: 0
+          });
+        }
+      }
+
+      // Reduce the first real event's delta to avoid double-counting startup tokens
+      if (synthetic.length > 0 && out.length > 0) {
+        const adjusted = Math.max(0, out[0].tokens - syntheticTotal);
+        out[0] = Object.assign({}, out[0], { tokens: adjusted, delta: out[0].delta - (out[0].tokens - adjusted) });
+      }
+
+      return synthetic.concat(out);
     }
 
     const fmt = (n) => {
@@ -3692,17 +3788,24 @@
       +   '</div>'
       +   '<div style="padding:0 20px 8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
       +     '<div role="tablist" style="display:inline-flex;gap:2px;padding:2px;background:var(--cw-track);border-radius:7px">'
-      +       '<button data-cw-mode="example" class="cw-mode-btn" style="padding:5px 12px;border-radius:5px;border:none;background:transparent;color:var(--cw-text-2);font-size:12px;font-weight:600;cursor:pointer">' + escapeHtml(t('cwe_modeExample')) + '</button>'
       +       '<button data-cw-mode="session" class="cw-mode-btn" style="padding:5px 12px;border-radius:5px;border:none;background:transparent;color:var(--cw-text-2);font-size:12px;font-weight:600;cursor:pointer">' + escapeHtml(t('cwe_modeSession')) + '</button>'
+      +       '<button data-cw-mode="example" class="cw-mode-btn" style="padding:5px 12px;border-radius:5px;border:none;background:transparent;color:var(--cw-text-2);font-size:12px;font-weight:600;cursor:pointer">' + escapeHtml(t('cwe_modeExample')) + '</button>'
       +     '</div>'
       +     '<div id="cw-session-tools" style="display:none;align-items:center;gap:8px;flex-wrap:wrap;position:relative">'
       +       '<div style="position:relative">'
       +         '<input id="cw-session-input" type="text" autocomplete="off" spellcheck="false" placeholder="' + escapeHtml(t('cwe_searchHint')) + '" style="width:340px;padding:6px 10px;border-radius:5px;border:1px solid var(--cw-border);background:var(--cw-surface);color:var(--cw-text-2);font-size:12px;font-family:var(--cw-font-mono);outline:none" />'
-      +         '<div id="cw-session-list" style="display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:20;width:520px;max-height:360px;overflow-y:auto;background:var(--cw-bg);border:1px solid var(--cw-border);border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,0.12)" class="cw-scroll"></div>'
+      +         '<div id="cw-session-list" style="display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:20;width:520px;max-height:360px;overflow-y:auto;background:var(--cw-bg);border:1px solid var(--cw-border);border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,0.12)" class="cw-scroll">'
+      +           '<div id="cw-session-items"></div>'
+      +           '<div id="cw-session-nav" style="position:sticky;bottom:6px;right:0;float:right;display:none;gap:3px;margin:0 6px 0 0;z-index:1">'
+      +             '<button id="cw-list-top" style="width:24px;height:24px;border-radius:4px;border:1px solid var(--cw-border);background:var(--cw-surface);color:var(--cw-text-dim);cursor:pointer;display:flex;align-items:center;justify-content:center;opacity:0.5;transition:opacity 0.15s" title="맨 위로" onmouseover="this.style.opacity=\'1\'" onmouseout="this.style.opacity=\'0.5\'"><svg width="9" height="6" viewBox="0 0 9 6" fill="currentColor"><path d="M4.5 0L9 6H0z"/></svg></button>'
+      +             '<button id="cw-list-bottom" style="width:24px;height:24px;border-radius:4px;border:1px solid var(--cw-border);background:var(--cw-surface);color:var(--cw-text-dim);cursor:pointer;display:flex;align-items:center;justify-content:center;opacity:0.5;transition:opacity 0.15s" title="맨 아래로" onmouseover="this.style.opacity=\'1\'" onmouseout="this.style.opacity=\'0.5\'"><svg width="9" height="6" viewBox="0 0 9 6" fill="currentColor"><path d="M4.5 6L0 0H9z"/></svg></button>'
+      +           '</div>'
+      +         '</div>'
       +       '</div>'
       +       '<div role="group" style="display:inline-flex;gap:2px;padding:2px;background:var(--cw-track);border-radius:6px">'
       +         '<button data-cw-sort="recent" class="cw-sort-btn" style="padding:4px 10px;border-radius:4px;border:none;background:transparent;color:var(--cw-text-2);font-size:11px;font-weight:600;cursor:pointer">' + escapeHtml(t('cwe_sortRecent')) + '</button>'
       +         '<button data-cw-sort="turns" class="cw-sort-btn cw-tip" data-tip="' + escapeHtml(t('cwe_turnsHelp')) + '" style="padding:4px 10px;border-radius:4px;border:none;background:transparent;color:var(--cw-text-2);font-size:11px;font-weight:600;cursor:pointer">' + escapeHtml(t('cwe_sortTurns')) + '</button>'
+      +         '<button data-cw-sort="tokens" class="cw-sort-btn" style="padding:4px 10px;border-radius:4px;border:none;background:transparent;color:var(--cw-text-2);font-size:11px;font-weight:600;cursor:pointer">' + escapeHtml(t('cwe_sortTokens')) + '</button>'
       +       '</div>'
       +     '</div>'
       +     '<span id="cw-session-empty" style="display:none;font-size:12px;color:var(--cw-text-faint)">' + escapeHtml(t('cwe_noSessions')) + '</span>'
@@ -3711,17 +3814,33 @@
       +     '<div style="height:4px;border-radius:2px;background:var(--cw-track);overflow:hidden;margin-bottom:6px">'
       +       '<div id="cw-progress-top" style="width:0%;height:100%;transition:width 0.6s cubic-bezier(0.4,0,0.2,1), background 0.3s"></div>'
       +     '</div>'
-      +     '<div id="cw-bar" style="height:28px;border-radius:5px;background:var(--cw-track);border:1px solid var(--cw-border);overflow:hidden;display:flex"></div>'
+      +     '<div style="height:28px;border-radius:5px;background:var(--cw-track);border:1px solid var(--cw-border);overflow:hidden"><canvas id="cw-bar" style="width:100%;height:100%;display:block;cursor:pointer"></canvas></div>'
       +     '<div style="display:flex;gap:12px;margin-top:6px;flex-wrap:wrap;justify-content:space-between">'
       +       '<div id="cw-legend" style="display:flex;gap:12px;flex-wrap:wrap"></div>'
-      +       '<div style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--cw-text-dim)">'
-      +         '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#558A42" stroke-width="2.5"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>'
-      +         '<span>' + escapeHtml(t('cwe_appearsInTerminal')) + '</span>'
+      +       '<div style="display:flex;gap:10px;align-items:center;font-size:11px;color:var(--cw-text-dim)">'
+      +         '<div style="display:flex;gap:4px;align-items:center">'
+      +           '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="color:var(--cw-text-faint);opacity:0.35"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>'
+      +           '<span style="color:var(--cw-text-faint)">' + escapeHtml(t('cwe_visHidden')) + '</span>'
+      +         '</div>'
+      +         '<div style="display:flex;gap:4px;align-items:center">'
+      +           '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="color:var(--cw-text-faint);opacity:0.5"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><line x1="9" y1="12" x2="15" y2="12"/></svg>'
+      +           '<span>' + escapeHtml(t('cwe_visBrief')) + '</span>'
+      +         '</div>'
+      +         '<div style="display:flex;gap:4px;align-items:center">'
+      +           '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#558A42" stroke-width="3"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>'
+      +           '<span>' + escapeHtml(t('cwe_visFull')) + '</span>'
+      +         '</div>'
       +       '</div>'
       +     '</div>'
       +   '</div>'
       +   '<div id="cw-main" style="display:flex;padding:14px 20px 0;gap:16px;flex:1;min-height:0">'
-      +     '<div id="cw-timeline" class="cw-scroll" style="flex:1;min-width:0;overflow-y:auto;padding-right:8px;scroll-behavior:smooth"></div>'
+      +     '<div style="flex:1;min-width:0;position:relative">'
+      +       '<div id="cw-timeline" class="cw-scroll" style="width:100%;height:100%;overflow-y:auto;padding-right:8px"></div>'
+      +       '<div id="cw-tl-nav" style="position:absolute;bottom:8px;right:16px;display:flex;gap:3px;opacity:0;pointer-events:none;transition:opacity 0.2s;z-index:2">'
+      +         '<button id="cw-tl-top" style="width:24px;height:24px;border-radius:4px;border:1px solid var(--cw-border);background:var(--cw-surface);color:var(--cw-text-dim);cursor:pointer;display:flex;align-items:center;justify-content:center" title="맨 위로"><svg width="9" height="6" viewBox="0 0 9 6" fill="currentColor"><path d="M4.5 0L9 6H0z"/></svg></button>'
+      +         '<button id="cw-tl-bottom" style="width:24px;height:24px;border-radius:4px;border:1px solid var(--cw-border);background:var(--cw-surface);color:var(--cw-text-dim);cursor:pointer;display:flex;align-items:center;justify-content:center" title="맨 아래로"><svg width="9" height="6" viewBox="0 0 9 6" fill="currentColor"><path d="M4.5 6L0 0H9z"/></svg></button>'
+      +       '</div>'
+      +     '</div>'
       +     '<div style="width:300px;flex-shrink:0;display:flex;flex-direction:column">'
       +       '<div id="cw-detail" class="cw-scroll" style="padding:14px 16px;border-radius:10px;background:var(--cw-surface);border:1px solid var(--cw-border);flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:10px"></div>'
       +     '</div>'
@@ -3755,6 +3874,8 @@
     const sessionTools = document.getElementById('cw-session-tools');
     const sessionInput = document.getElementById('cw-session-input');
     const sessionList = document.getElementById('cw-session-list');
+    const sessionItems = document.getElementById('cw-session-items');
+    const sessionNav = document.getElementById('cw-session-nav');
     const sessionEmpty = document.getElementById('cw-session-empty');
     const modeBtns = Array.from(root.querySelectorAll('[data-cw-mode]'));
     const sortBtns = Array.from(root.querySelectorAll('[data-cw-sort]'));
@@ -3892,48 +4013,266 @@
 
     // ── Render sub-regions ──
     function renderBarSegments(view) {
-      const activeIdx = state.selIdx !== null ? state.selIdx : state.hovIdx;
-      // Session mode: scale each block proportionally so the bar's total width
-      // equals peakCumulative/budget — matching the header number. Without this,
-      // the bar sums deltas (smaller than peak when cache reuse dominates) and
-      // the user sees a mismatch between the header and the bar fill level.
-      let sessionScale = 1;
-      if (state.mode === 'session' && view.blocks.length > 0) {
-        const sumDeltas = view.blocks.reduce((s, b) => s + b._tokens, 0);
-        if (sumDeltas > 0) sessionScale = view.totalTokens / sumDeltas;
+      const ctx = barEl.getContext('2d');
+      const dpr = window.devicePixelRatio || 1;
+      const W = barEl.clientWidth || barEl.parentElement?.clientWidth || 600;
+      const H = barEl.clientHeight || 28;
+      // Resize only when dimensions actually changed (avoids unnecessary resets)
+      if (barEl.width !== Math.round(W * dpr) || barEl.height !== Math.round(H * dpr)) {
+        barEl.width = Math.round(W * dpr);
+        barEl.height = Math.round(H * dpr);
       }
-      const html = view.blocks.map((b, i) => {
-        // Example mode has only ~36 blocks, so a 0.15% minimum keeps tiny events
-        // visible without distorting totals. Session mode often has 500+ blocks —
-        // the min-width would compound into a massively inflated bar, so drop it.
-        const w = state.mode === 'session'
-          ? (b._tokens / state.budget * 100) * sessionScale
-          : Math.max(b._tokens / state.budget * 100, 0.15);
-        const isHov = b.visIdx === activeIdx;
-        const catMatch = state.hovCat && b.color === state.hovCat;
-        const dimmed = state.hovCat ? !catMatch : (activeIdx !== null && !isHov);
-        const opacity = (isHov || catMatch) ? 1 : (dimmed ? 0.25 : 0.65);
-        const borderR = i < view.blocks.length - 1 ? '0.5px solid var(--cw-border)' : 'none';
-        return '<div data-cw-block="' + b.visIdx + '" style="width:' + w + '%;height:100%;background:' + b.color + ';opacity:' + opacity + ';border-right:' + borderR + ';transition:opacity 0.15s;cursor:pointer"></div>';
-      }).join('');
-      barEl.innerHTML = html;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, W, H);
+
+      const activeIdx = state.selIdx !== null ? state.selIdx : state.hovIdx;
+      const segments = []; // { visIdx, x, w } for hit-testing
+
+      if (state.mode === 'session') {
+        const sumDeltas = view.blocks.reduce((s, b) => s + b._tokens, 0);
+        const sessionScale = sumDeltas > 0 ? view.totalTokens / sumDeltas : 1;
+        const totalPct = view.totalTokens / state.budget * 100;
+        const MIN_PX = 0.5 / W; // skip truly sub-pixel blocks
+        let cumPct = 0;
+        const planned = view.blocks.map((b) => {
+          const w = (b._tokens / state.budget * 100) * sessionScale;
+          const left = cumPct;
+          cumPct += w;
+          return { b, w, left };
+        }).filter(({ w }) => w / 100 * W >= MIN_PX);
+
+        planned.forEach(({ b, w, left }, ri) => {
+          const isLast = ri === planned.length - 1;
+          const widthPct = isLast ? Math.max(0, totalPct - left) : w;
+          const isHov = b.visIdx === activeIdx;
+          const catMatch = state.hovCat && b.color === state.hovCat;
+          const dimmed = state.hovCat ? !catMatch : (activeIdx !== null && !isHov);
+          const opacity = (isHov || catMatch) ? 1 : (dimmed ? 0.25 : 0.65);
+          const x = left / 100 * W;
+          const segW = Math.max(0.5, widthPct / 100 * W);
+          ctx.globalAlpha = opacity;
+          ctx.fillStyle = b.color;
+          ctx.fillRect(x, 0, segW, H);
+          segments.push({ visIdx: b.visIdx, x, w: segW });
+        });
+      } else {
+        // Example mode (~36 blocks)
+        let cumX = 0;
+        view.blocks.forEach((b) => {
+          const segW = Math.max(b._tokens / state.budget * 100, 0.15) / 100 * W;
+          const isHov = b.visIdx === activeIdx;
+          const catMatch = state.hovCat && b.color === state.hovCat;
+          const dimmed = state.hovCat ? !catMatch : (activeIdx !== null && !isHov);
+          const opacity = (isHov || catMatch) ? 1 : (dimmed ? 0.25 : 0.65);
+          ctx.globalAlpha = opacity;
+          ctx.fillStyle = b.color;
+          ctx.fillRect(cumX, 0, segW, H);
+          segments.push({ visIdx: b.visIdx, x: cumX, w: segW });
+          cumX += segW;
+        });
+      }
+
+      ctx.globalAlpha = 1;
+      barEl._segments = segments;
+    }
+
+    function barSegmentAt(clientX) {
+      const segs = barEl._segments;
+      if (!segs || segs.length === 0) return null;
+      const rect = barEl.getBoundingClientRect();
+      const x = clientX - rect.left;
+      // Binary search — segments are left-to-right ordered
+      let lo = 0, hi = segs.length - 1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (x < segs[mid].x) hi = mid - 1;
+        else if (x >= segs[mid].x + segs[mid].w) lo = mid + 1;
+        else return segs[mid];
+      }
+      return null;
+    }
+
+    // ── Virtual timeline ──────────────────────────────────────────────────────
+    // Render only visible rows; use position:absolute within a fixed-height
+    // container so sub-pixel rounding and 1000+ DOM nodes never accumulate.
+    const TL_ROW_H = 38;    // base row height (px) — padding(10) + font(15) + line
+    const TL_PHASE_H = 36;  // section-label height incl. margins (margin-top:14 + content + margin-bottom:6 + gap)
+    const TL_ENTER_H = 26;  // "entering subagent" label height
+    const TL_LEAVE_H = 28;  // "left subagent" label height
+    const TL_BUFFER = 4;    // extra rows to render above/below viewport
+
+    let _tlLayout = null;   // { slotTops[], slotHeights[], totalH }
+    let _tlVisible = null;
+    let _tlView = null;
+
+    function computeTlLayout(visible) {
+      const slotTops = [], slotHeights = [];
+      let y = 0;
+      visible.forEach((evt, i) => {
+        const prevKind = i > 0 ? visible[i - 1].kind : null;
+        const isSub = evt.kind === 'sub';
+        let extraH = 0;
+        if (state.mode !== 'session') {
+          if ((evt.kind === 'user' && prevKind !== 'user')
+            || (evt.kind === 'claude' && prevKind === 'user')
+            || evt.isSummary) extraH += TL_PHASE_H;
+        }
+        if (prevKind === 'sub' && !isSub) extraH += TL_LEAVE_H;
+        if (isSub && prevKind !== 'sub') extraH += TL_ENTER_H;
+        slotTops.push(y);
+        const h = extraH + TL_ROW_H;
+        slotHeights.push(h);
+        y += h;
+      });
+      return { slotTops, slotHeights, totalH: y };
+    }
+
+    function renderTimelineSlot(visible, i, view) {
+      const evt = visible[i];
+      const meta = KIND_META[evt.kind];
+      const isHov = state.hovIdx === i;
+      const isSel = state.selIdx === i;
+      const prevKind = i > 0 ? visible[i - 1].kind : null;
+      const isSub = evt.kind === 'sub';
+      const enteringSub = isSub && prevKind !== 'sub';
+      const leavingSub = prevKind === 'sub' && !isSub;
+      const { subTotal, isCompacted } = view;
+
+      let showPhase = null;
+      if (state.mode !== 'session') {
+        if (evt.kind === 'user' && prevKind !== 'user') showPhase = t('cwe_phaseYou');
+        else if (evt.kind === 'claude' && prevKind === 'user') showPhase = t('cwe_phaseClaudeWorks');
+        else if (evt.isSummary) showPhase = t('cwe_phaseSummarized');
+      }
+      const isNewRow = isCompacted && !(evt.kind === 'auto' && evt.t < STARTUP_END);
+      const rowOpen = '<div' + (isNewRow ? ' class="cw-compacted-row" style="animation-delay:' + (i * 60) + 'ms"' : '') + '>';
+
+      let html = '';
+      if (showPhase) {
+        html += rowOpen + '<div style="font-size:12px;font-weight:700;color:var(--cw-text-faint);text-transform:uppercase;letter-spacing:0.6px;margin-top:14px;margin-bottom:6px;padding-left:28px">' + escapeHtml(showPhase) + '</div>';
+      } else {
+        html += rowOpen;
+      }
+      if (enteringSub) {
+        html += '<div style="margin-left:28px;margin-top:6px;margin-bottom:2px;padding-left:10px;border-left:2px solid rgba(155,123,196,0.4);font-size:12px;font-weight:600;color:#9B7BC4;text-transform:uppercase;letter-spacing:0.5px">' + escapeHtml(t('cwe_subagentCtxLabel')) + '</div>';
+      }
+      if (leavingSub) {
+        html += '<div style="margin-left:28px;margin-bottom:6px;padding-left:10px;padding-bottom:6px;border-left:2px solid rgba(155,123,196,0.4);font-size:12px;color:var(--cw-text-dim);font-family:var(--cw-font-mono)">↓ ' + escapeHtml(t('cwe_subagentReturned', fmt(subTotal))) + '</div>';
+      }
+
+      const dimmed = state.hovCat && evt.color !== state.hovCat;
+      const rowBg = (isSel || isHov) ? 'var(--cw-hover)' : 'transparent';
+      const outline = isSel ? '1px solid rgba(217,119,87,0.4)' : 'none';
+      const rowStyle = 'display:flex;align-items:flex-start;border-radius:6px;cursor:pointer;'
+        + 'background:' + rowBg + ';outline:' + outline + ';opacity:' + (dimmed ? 0.35 : 1) + ';'
+        + 'transition:background 0.1s,opacity 0.15s;'
+        + (isSub ? 'margin-left:28px;padding-left:10px;border-left:2px solid rgba(155,123,196,0.4);' : '');
+
+      html += '<div data-cw-item="' + i + '" style="' + rowStyle + '">';
+      const dotSz = (evt.kind === 'user' || evt.kind === 'compact') ? 10 : 7;
+      html += '<div style="width:28px;display:flex;flex-direction:column;align-items:center;padding-top:8px;flex-shrink:0">'
+        + '<div style="width:' + dotSz + 'px;height:' + dotSz + 'px;border-radius:50%;background:' + evt.color + ';opacity:' + (isHov ? 1 : 0.6) + ';transition:opacity 0.15s;' + (isHov ? 'box-shadow:0 0 8px ' + evt.color + '40' : '') + '"></div>';
+      if (i < visible.length - 1) {
+        html += '<div style="width:1.5px;flex:1;background:var(--cw-rail);margin-top:2px;min-height:6px"></div>';
+      }
+      html += '</div>';
+
+      const labelColor = isHov ? 'var(--cw-text)'
+        : evt.kind === 'user' ? '#558A42'
+        : evt.kind === 'auto' ? 'var(--cw-text-dim)' : 'var(--cw-text-2)';
+      const tok = evtTokens(evt);
+      const subTok = evtSubTokens(evt);
+      html += '<div style="flex:1;min-width:0;padding:5px 10px 5px 4px;display:flex;align-items:center;gap:8px">'
+        + '<span style="font-size:12px;font-weight:600;padding:1px 5px;border-radius:3px;background:' + meta.badgeBg + ';color:' + meta.badgeColor + ';flex-shrink:0;font-family:var(--cw-font-mono)">' + escapeHtml(t(meta.badgeKey)) + '</span>'
+        + '<span style="font-size:15px;font-family:var(--cw-font-mono);color:' + labelColor + ';flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:' + (evt.kind === 'user' ? 550 : 400) + '">' + escapeHtml(evtLabel(evt)) + '</span>';
+      if (tok > 0) {
+        html += '<span style="font-size:12px;font-family:var(--cw-font-mono);color:var(--cw-text-faint);flex-shrink:0">+' + fmt(tok) + '</span>';
+      }
+      if (subTok > 0) {
+        html += '<span style="font-size:12px;font-family:var(--cw-font-mono);color:#9B7BC4;flex-shrink:0;opacity:0.6">+' + fmt(subTok) + '</span>';
+      }
+      if (tok > 0) {
+        const mw = Math.min(tok / 5000 * 100, 100);
+        html += '<div style="width:50px;height:5px;border-radius:2px;background:var(--cw-track);flex-shrink:0;overflow:hidden">'
+          + '<div style="width:' + mw + '%;height:100%;background:' + evt.color + ';opacity:' + (isHov ? 0.8 : 0.4) + ';transition:opacity 0.15s"></div>'
+          + '</div>';
+      }
+      html += '<span style="width:14px;flex-shrink:0;display:flex;justify-content:center" title="' + escapeHtml(t(VIS_META[evt.vis].labelKey)) + '">';
+      if (evt.vis === 'hidden') {
+        // Closed eye — same muted style, slash across the eye path
+        html += '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="color:var(--cw-text-faint);opacity:0.35"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
+      } else if (evt.vis === 'brief') {
+        // Eye outline + dash inside: visible but abbreviated
+        html += '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="color:var(--cw-text-faint);opacity:0.5"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><line x1="9" y1="12" x2="15" y2="12"/></svg>';
+      } else {
+        // full — open eye, green
+        html += '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#558A42" stroke-width="3.5" style="opacity:1"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+      }
+      html += '</span>';
+      html += '</div>'; // label container
+      html += '</div>'; // row
+      html += '</div>'; // rowOpen wrapper
+      return html;
+    }
+
+    function updateVirtualRows() {
+      if (!timelineEl) return;
+      const virtEl = timelineEl.querySelector('#cw-tl-virt');
+      if (!virtEl || !_tlLayout || !_tlVisible || _tlVisible.length === 0) return;
+
+      const hdrEl = timelineEl.querySelector('#cw-tl-hdr');
+      const hdrH = hdrEl ? hdrEl.offsetHeight : 0;
+      const scrollTop = timelineEl.scrollTop;
+      const relScroll = Math.max(0, scrollTop - hdrH);
+      const viewH = timelineEl.clientHeight || 500;
+      const { slotTops, slotHeights, totalH } = _tlLayout;
+      const n = _tlVisible.length;
+
+      // Binary search: first slot whose bottom edge is below the viewport top
+      let start = n;
+      let lo = 0, hi = n - 1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (slotTops[mid] + slotHeights[mid] <= relScroll) { start = mid + 1; lo = mid + 1; }
+        else { start = mid; hi = mid - 1; }
+      }
+      start = Math.max(0, start - TL_BUFFER);
+
+      // Linear scan for last visible slot
+      let end = start;
+      while (end < n - 1 && slotTops[end + 1] < relScroll + viewH) end++;
+      end = Math.min(n - 1, end + TL_BUFFER);
+
+      let html = '';
+      for (let i = start; i <= end; i++) {
+        html += '<div style="position:absolute;top:' + slotTops[i] + 'px;left:0;right:0">'
+          + renderTimelineSlot(_tlVisible, i, _tlView)
+          + '</div>';
+      }
+      virtEl.innerHTML = html;
     }
 
     function renderTimeline(view) {
       const activeGate = activeGateNow();
       const { visible, subTotal, isCompacted, preCompactTotal, totalTokens } = view;
-      let html = '';
 
-      // Session mode with no selection yet → prompt the user to pick one.
+      _tlVisible = visible;
+      _tlView = view;
+
+      // Save scroll position — innerHTML resets it to 0
+      const savedScrollTop = timelineEl.scrollTop;
+
+      // ── Empty states ──
       if (state.mode === 'session' && state.sessionEvents.length === 0) {
-        html += '<div style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--cw-text-faint)">'
+        timelineEl.innerHTML = '<div id="cw-tl-hdr" style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;color:var(--cw-text-faint)">'
           + '<div style="font-size:28px;opacity:0.3">⌕</div>'
           + '<div style="font-size:14px;font-weight:500">' + escapeHtml(t('cwe_pickSessionTitle')) + '</div>'
           + '<div style="font-size:12px;max-width:320px;text-align:center;line-height:1.5">' + escapeHtml(t('cwe_pickSessionHint')) + '</div>'
           + '</div>';
+        return;
       }
       if (visible.length === 0 && !state.playing && state.mode !== 'session') {
-        html += '<div style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px">'
+        timelineEl.innerHTML = '<div id="cw-tl-hdr" style="height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px">'
           + '<div style="font-family:var(--cw-font-mono);font-size:16px;color:var(--cw-text-dim);display:flex;align-items:center;gap:8px">'
           +   '<span style="color:var(--cw-text-faint)">$</span><span>claude</span>'
           +   '<span style="display:inline-block;width:8px;height:16px;background:var(--cw-text-dim);opacity:0.5;animation:cw-blink 1s step-end infinite"></span>'
@@ -3943,10 +4282,13 @@
           +   renderCode(t('cwe_startHint'))
           + '</div>'
           + '</div>';
+        return;
       }
 
+      // ── Header (non-virtual) ──
+      let hdrHtml = '<div id="cw-tl-hdr">';
       if (isCompacted) {
-        html += '<div style="margin-bottom:10px;padding:10px 12px;border-radius:6px;background:rgba(217,119,87,0.05);border:1px solid rgba(217,119,87,0.15)">'
+        hdrHtml += '<div style="margin-bottom:10px;padding:10px 12px;border-radius:6px;background:rgba(217,119,87,0.05);border:1px solid rgba(217,119,87,0.15)">'
           + '<div style="font-size:13px;font-weight:600;color:#D97757;margin-bottom:3px">' + escapeHtml(t('cwe_afterCompactTitle')) + '</div>'
           + '<div style="font-size:13px;color:var(--cw-text-3);line-height:1.5;font-family:var(--cw-font-mono)">'
           +   escapeHtml(t('cwe_afterCompactStats', fmt(preCompactTotal), fmt(totalTokens), fmt(preCompactTotal - totalTokens)))
@@ -3956,112 +4298,35 @@
           + '</div>'
           + '</div>';
       }
-
       if (state.mode !== 'session' && state.time > 0 && visible.length > 0) {
-        html += '<div style="font-size:12px;font-weight:700;color:var(--cw-text-faint);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:6px;padding-left:28px">'
+        hdrHtml += '<div style="font-size:12px;font-weight:700;color:var(--cw-text-faint);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:6px;padding-left:28px">'
           + escapeHtml(isCompacted ? t('cwe_reloadedAfterCompact') : t('cwe_beforeYouType'))
           + '</div>';
       }
       if (state.mode === 'session' && visible.length > 0) {
-        html += '<div style="font-size:12px;font-weight:700;color:var(--cw-text-faint);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:6px;padding-left:28px">'
+        hdrHtml += '<div style="font-size:12px;font-weight:700;color:var(--cw-text-faint);text-transform:uppercase;letter-spacing:0.6px;margin-bottom:6px;padding-left:28px">'
           + escapeHtml(t('cwe_sessionReplay'))
           + '</div>';
       }
+      hdrHtml += '</div>';
 
-      if (state.time > 0 || state.mode === 'session') {
-        visible.forEach((evt, i) => {
-          const meta = KIND_META[evt.kind];
-          const isHov = state.hovIdx === i;
-          const isSel = state.selIdx === i;
-          const prevKind = i > 0 ? visible[i - 1].kind : null;
-          const isSub = evt.kind === 'sub';
-          const enteringSub = isSub && prevKind !== 'sub';
-          const leavingSub = prevKind === 'sub' && !isSub;
-          let showPhase = null;
-          if (state.mode !== 'session') {
-            if (evt.kind === 'user' && prevKind !== 'user') showPhase = t('cwe_phaseYou');
-            else if (evt.kind === 'claude' && prevKind === 'user') showPhase = t('cwe_phaseClaudeWorks');
-            else if (evt.isSummary) showPhase = t('cwe_phaseSummarized');
-          }
-          const isNewRow = isCompacted && !(evt.kind === 'auto' && evt.t < STARTUP_END);
+      // ── Virtual list container ──
+      const showRows = state.time > 0 || state.mode === 'session';
+      _tlLayout = (showRows && visible.length > 0) ? computeTlLayout(visible) : null;
+      const virtH = _tlLayout ? _tlLayout.totalH : 0;
+      const virtHtml = (showRows && visible.length > 0)
+        ? '<div id="cw-tl-virt" style="position:relative;height:' + virtH + 'px"></div>'
+        : '';
 
-          const rowOpen = '<div' + (isNewRow ? ' class="cw-compacted-row" style="animation-delay:' + (i * 60) + 'ms"' : '') + '>';
-
-          if (showPhase) {
-            html += rowOpen + '<div style="font-size:12px;font-weight:700;color:var(--cw-text-faint);text-transform:uppercase;letter-spacing:0.6px;margin-top:14px;margin-bottom:6px;padding-left:28px">' + escapeHtml(showPhase) + '</div>';
-          } else {
-            html += rowOpen;
-          }
-
-          if (enteringSub) {
-            html += '<div style="margin-left:28px;margin-top:6px;margin-bottom:2px;padding-left:10px;border-left:2px solid rgba(155,123,196,0.4);font-size:12px;font-weight:600;color:#9B7BC4;text-transform:uppercase;letter-spacing:0.5px">' + escapeHtml(t('cwe_subagentCtxLabel')) + '</div>';
-          }
-          if (leavingSub) {
-            html += '<div style="margin-left:28px;margin-bottom:6px;padding-left:10px;padding-bottom:6px;border-left:2px solid rgba(155,123,196,0.4);font-size:12px;color:var(--cw-text-dim);font-family:var(--cw-font-mono)">↓ ' + escapeHtml(t('cwe_subagentReturned', fmt(subTotal))) + '</div>';
-          }
-
-          const dimmed = state.hovCat && evt.color !== state.hovCat;
-          const rowBg = (isSel || isHov) ? 'var(--cw-hover)' : 'transparent';
-          const outline = isSel ? '1px solid rgba(217,119,87,0.4)' : 'none';
-          const rowStyle = 'display:flex;align-items:flex-start;border-radius:6px;cursor:pointer;'
-            + 'background:' + rowBg + ';outline:' + outline + ';opacity:' + (dimmed ? 0.35 : 1) + ';'
-            + 'transition:background 0.1s,opacity 0.15s;'
-            + (isSub ? 'margin-left:28px;padding-left:10px;border-left:2px solid rgba(155,123,196,0.4);' : '');
-
-          html += '<div data-cw-item="' + i + '" style="' + rowStyle + '">';
-          const dotSz = (evt.kind === 'user' || evt.kind === 'compact') ? 10 : 7;
-          html += '<div style="width:28px;display:flex;flex-direction:column;align-items:center;padding-top:8px;flex-shrink:0">'
-            + '<div style="width:' + dotSz + 'px;height:' + dotSz + 'px;border-radius:50%;background:' + evt.color + ';opacity:' + (isHov ? 1 : 0.6) + ';transition:opacity 0.15s;' + (isHov ? 'box-shadow:0 0 8px ' + evt.color + '40' : '') + '"></div>';
-          if (i < visible.length - 1) {
-            html += '<div style="width:1.5px;flex:1;background:var(--cw-rail);margin-top:2px;min-height:6px"></div>';
-          }
-          html += '</div>';
-
-          const labelColor = isHov ? 'var(--cw-text)'
-            : evt.kind === 'user' ? '#558A42'
-            : evt.kind === 'auto' ? 'var(--cw-text-dim)' : 'var(--cw-text-2)';
-          const tok = evtTokens(evt);
-          const subTok = evtSubTokens(evt);
-          html += '<div style="flex:1;min-width:0;padding:5px 10px 5px 4px;display:flex;align-items:center;gap:8px">'
-            + '<span style="font-size:12px;font-weight:600;padding:1px 5px;border-radius:3px;background:' + meta.badgeBg + ';color:' + meta.badgeColor + ';flex-shrink:0;font-family:var(--cw-font-mono)">' + escapeHtml(t(meta.badgeKey)) + '</span>'
-            + '<span style="font-size:15px;font-family:var(--cw-font-mono);color:' + labelColor + ';flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:' + (evt.kind === 'user' ? 550 : 400) + '">' + escapeHtml(evtLabel(evt)) + '</span>';
-
-          if (tok > 0) {
-            html += '<span style="font-size:12px;font-family:var(--cw-font-mono);color:var(--cw-text-faint);flex-shrink:0">+' + fmt(tok) + '</span>';
-          }
-          if (subTok > 0) {
-            html += '<span style="font-size:12px;font-family:var(--cw-font-mono);color:#9B7BC4;flex-shrink:0;opacity:0.6">+' + fmt(subTok) + '</span>';
-          }
-          if (tok > 0) {
-            const mw = Math.min(tok / 5000 * 100, 100);
-            html += '<div style="width:50px;height:5px;border-radius:2px;background:var(--cw-track);flex-shrink:0;overflow:hidden">'
-              + '<div style="width:' + mw + '%;height:100%;background:' + evt.color + ';opacity:' + (isHov ? 0.8 : 0.4) + ';transition:opacity 0.15s"></div>'
-              + '</div>';
-          }
-          // Eye icon
-          html += '<span style="width:14px;flex-shrink:0;display:flex;justify-content:center" title="' + escapeHtml(t(VIS_META[evt.vis].labelKey)) + '">';
-          if (evt.vis !== 'hidden') {
-            const stroke = evt.vis === 'full' ? '#558A42' : 'currentColor';
-            const op = evt.vis === 'full' ? 1 : 0.5;
-            const sw = evt.vis === 'full' ? '3.5' : '3';
-            html += '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="' + stroke + '" stroke-width="' + sw + '" style="color:var(--cw-text-faint);opacity:' + op + '"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
-          }
-          html += '</span>';
-          html += '</div>'; // label container
-          html += '</div>'; // row
-          html += '</div>'; // rowOpen wrapper
-        });
-      }
-
+      // ── Gate card (non-virtual footer) ──
+      let ftrHtml = '';
       // Gate card — displays the fixed scripted prompt for this scenario step.
-      // Text is static (editing was removed; example events use pre-authored labels).
       if (activeGate) {
         const gateText = t(activeGate.gateKey);
         const isCompact = activeGate.kind === 'compact';
         const textSpan = '<span style="flex:1;min-width:0;font:15px var(--cw-font-mono);color:var(--cw-text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(gateText) + '</span>';
-
         if (!isCompact) {
-          html += '<div style="padding-left:28px;margin-top:12px;padding-right:8px">'
+          ftrHtml += '<div style="padding-left:28px;margin-top:12px;padding-right:8px">'
             + '<div style="font-size:11px;font-weight:600;color:#6BA656;font-family:var(--cw-font-mono);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;padding-left:2px">' + escapeHtml(t('cwe_youTypeHeader')) + '</div>'
             + '<div style="display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:6px;background:rgba(85,138,66,0.06);border:1px solid rgba(85,138,66,0.2)">'
             +   '<span style="color:#558A42;font-size:15px;font-family:var(--cw-font-mono);flex-shrink:0">❯</span>'
@@ -4073,7 +4338,7 @@
             + '</div>';
         } else {
           const barColor = (totalTokens / state.budget * 100) > 75 ? '#D97757' : (totalTokens / state.budget * 100) > 50 ? '#B8860B' : '#558A42';
-          html += '<div style="padding-left:28px;margin-top:12px;padding-right:8px">'
+          ftrHtml += '<div style="padding-left:28px;margin-top:12px;padding-right:8px">'
             + '<div style="padding:12px 14px;border-radius:6px;background:rgba(217,119,87,0.06);border:1px solid rgba(217,119,87,0.25)">'
             +   '<div style="font-size:13px;color:var(--cw-text-3);margin-bottom:8px;line-height:1.5">'
             +     escapeHtml(t('cwe_compactPromptPre')) + ' <span style="font-family:var(--cw-font-mono);font-weight:600;color:' + barColor + '">' + fmt(totalTokens) + ' ' + escapeHtml(t('cwe_tokensWord')) + '</span>. '
@@ -4089,7 +4354,9 @@
         }
       }
 
-      timelineEl.innerHTML = html;
+      timelineEl.innerHTML = hdrHtml + virtHtml + ftrHtml;
+      timelineEl.scrollTop = savedScrollTop;
+      updateVirtualRows();
     }
 
     function renderDetail(view) {
@@ -4100,6 +4367,30 @@
       const terminalView = getTerminalView(focusT, view.isCompacted);
 
       let html = '';
+      if (hovEvent && hovEvent.isSession && hovEvent.isSynthetic) {
+        const meta = KIND_META[hovEvent.kind];
+        html += '<div>'
+          + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">'
+          +   '<div style="width:10px;height:10px;border-radius:3px;background:' + hovEvent.color + ';opacity:0.8"></div>'
+          +   '<span style="font-size:16px;font-weight:600">' + escapeHtml(evtLabel(hovEvent)) + '</span>'
+          + '</div>'
+          + '<div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">'
+          +   '<div style="display:flex;padding:3px 8px;border-radius:4px;background:' + meta.badgeBg + '">'
+          +     '<span style="font-size:12px;font-weight:600;color:' + meta.badgeColor + '">' + escapeHtml(t(meta.detailKey)) + '</span>'
+          +   '</div>'
+          +   '<div style="display:flex;padding:3px 8px;border-radius:4px;background:rgba(140,140,130,0.1)">'
+          +     '<span style="font-size:12px;font-weight:600;color:var(--cw-text-faint)">' + escapeHtml(t('cwe_estimatedTag')) + '</span>'
+          +   '</div>'
+          + '</div>'
+          + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">'
+          +   '<span style="font-size:14px;font-family:var(--cw-font-mono);color:var(--cw-text-2)">~' + fmt(hovEvent.tokens) + ' ' + escapeHtml(t('cwe_tokensWord')) + '</span>'
+          + '</div>'
+          + '<p style="font-size:14px;color:var(--cw-text-dim);line-height:1.55;margin:0">' + escapeHtml(t('cwe_sessionStartupDesc')) + '</p>'
+          + '</div>';
+        detailEl.innerHTML = html;
+        detailEl.scrollTop = 0;
+        return;
+      }
       if (hovEvent && hovEvent.isSession) {
         const meta = KIND_META[hovEvent.kind];
         const pctCache = hovEvent.cumulative > 0
@@ -4290,10 +4581,17 @@
       } else if (state.playing || gate) {
         timelineEl.scrollTop = timelineEl.scrollHeight;
       }
+      // Re-render virtual rows after scroll position may have changed
+      updateVirtualRows();
 
-      // Bottom progress
+      // Bottom progress (scrubber = playback position; label = context usage in session mode
+      // so it matches the top bar and header — avoids showing "100%" vs "18.7%" confusion).
       progressBottom.style.width = (state.time * 100) + '%';
-      percentEl.textContent = Math.round(state.time * 100) + '%';
+      if (state.mode === 'session') {
+        percentEl.textContent = (pct >= 10 ? Math.round(pct) : pct.toFixed(1)) + '%';
+      } else {
+        percentEl.textContent = Math.round(state.time * 100) + '%';
+      }
 
       // Play button icon (reuses `gate` computed earlier for focus restore)
       playBtn.textContent = state.time >= 1 ? '↺' : state.playing ? '⏸' : '▶';
@@ -4380,24 +4678,15 @@
         update();
         return;
       }
-      const block = e.target.closest('[data-cw-block]');
-      if (block) {
-        const i = parseInt(block.getAttribute('data-cw-block'), 10);
-        state.selIdx = state.selIdx === i ? null : i;
-        update();
-        return;
-      }
     });
 
     root.addEventListener('mouseover', (e) => {
       const item = e.target.closest('[data-cw-item]');
       if (item) { state.hovIdx = parseInt(item.getAttribute('data-cw-item'), 10); update(); return; }
-      const block = e.target.closest('[data-cw-block]');
-      if (block) { state.hovIdx = parseInt(block.getAttribute('data-cw-block'), 10); update(); return; }
       const leg = e.target.closest('[data-cw-legend]');
       if (leg) {
         state.hovCat = leg.getAttribute('data-cw-legend');
-        update();           // refreshes data-tip with fresh percentages
+        update();
         showFloatTipFor(leg);
         return;
       }
@@ -4405,8 +4694,8 @@
 
     root.addEventListener('mouseout', (e) => {
       const leaving = e.relatedTarget;
-      if (e.target.closest('[data-cw-item]') || e.target.closest('[data-cw-block]')) {
-        if (!leaving || !leaving.closest || (!leaving.closest('[data-cw-item]') && !leaving.closest('[data-cw-block]'))) {
+      if (e.target.closest('[data-cw-item]')) {
+        if (!leaving || !leaving.closest || !leaving.closest('[data-cw-item]')) {
           state.hovIdx = null; update();
         }
       }
@@ -4415,6 +4704,28 @@
           state.hovCat = null; update();
           hideFloatTip();
         }
+      }
+    });
+
+    // Canvas bar interactions (replaces data-cw-block delegation)
+    barEl.addEventListener('mousemove', (e) => {
+      const seg = barSegmentAt(e.clientX);
+      const newIdx = seg ? seg.visIdx : null;
+      if (newIdx !== state.hovIdx) {
+        state.hovIdx = newIdx;
+        state.hovCat = null;
+        update();
+      }
+    });
+    barEl.addEventListener('mouseleave', () => {
+      if (state.hovIdx !== null) { state.hovIdx = null; update(); }
+    });
+    barEl.addEventListener('click', (e) => {
+      state.hasInteracted = true;
+      const seg = barSegmentAt(e.clientX);
+      if (seg) {
+        state.selIdx = state.selIdx === seg.visIdx ? null : seg.visIdx;
+        update();
       }
     });
 
@@ -4434,7 +4745,9 @@
       const dateStr = (d.getMonth() + 1) + '/' + d.getDate() + ' ' + (dayNames[d.getDay()] || '')
         + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
       const snippet = (s.firstPrompt && s.firstPrompt.text) ? s.firstPrompt.text : s.id;
-      return { snippet: snippet, dateStr: dateStr, turns: s.count };
+      const modelStr = s.model ? shortModel(s.model) : '';
+      const peakStr = s.peakTokens > 0 ? fmt(s.peakTokens) : '';
+      return { snippet: snippet, dateStr: dateStr, turns: s.count, modelStr: modelStr, peakStr: peakStr };
     }
 
     // Apply search / sort / global period to produce the visible session list.
@@ -4460,6 +4773,8 @@
       });
       if (ui.sort === 'turns') {
         list = list.slice().sort((a, b) => b.count - a.count);
+      } else if (ui.sort === 'tokens') {
+        list = list.slice().sort((a, b) => b.peakTokens - a.peakTokens);
       } else {
         list = list.slice().sort((a, b) => b.maxTs - a.maxTs);
       }
@@ -4469,19 +4784,28 @@
     function renderSessionList() {
       const list = filteredSessions();
       if (list.length === 0) {
-        sessionList.innerHTML = '<div style="padding:12px 14px;font-size:12px;color:var(--cw-text-faint)">' + escapeHtml(t('cwe_noMatch')) + '</div>';
+        sessionItems.innerHTML = '<div style="padding:12px 14px;font-size:12px;color:var(--cw-text-faint)">' + escapeHtml(t('cwe_noMatch')) + '</div>';
+        sessionNav.style.display = 'none';
         return;
       }
       const html = list.map((s) => {
         const f = formatSessionOption(s);
         const active = s.id === state.sessionId;
         const bg = active ? 'rgba(217,119,87,0.08)' : 'transparent';
+        const metaParts = [f.dateStr, f.turns + ' ' + t('cwe_sessionTurns')];
+        const tagParts = [];
+        if (f.modelStr) tagParts.push('<span style="padding:1px 5px;border-radius:3px;background:rgba(217,119,87,0.12);color:#D97757;font-size:10px;font-weight:600">' + escapeHtml(f.modelStr) + '</span>');
+        if (f.peakStr)  tagParts.push('<span style="padding:1px 5px;border-radius:3px;background:rgba(138,136,128,0.1);color:var(--cw-text-faint);font-size:10px;font-weight:600">' + escapeHtml(f.peakStr) + ' ctx</span>');
         return '<div data-cw-pick="' + escapeHtml(s.id) + '" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--cw-border);background:' + bg + '">'
           +   '<div style="font-size:13px;color:var(--cw-text-2);line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + escapeHtml(f.snippet) + '</div>'
-          +   '<div style="font-size:11px;color:var(--cw-text-faint);font-family:var(--cw-font-mono);margin-top:2px">' + escapeHtml(f.dateStr) + ' · ' + f.turns + ' ' + escapeHtml(t('cwe_sessionTurns')) + '</div>'
+          +   '<div style="display:flex;align-items:center;gap:6px;margin-top:3px;flex-wrap:wrap">'
+          +     '<span style="font-size:11px;color:var(--cw-text-faint);font-family:var(--cw-font-mono)">' + escapeHtml(metaParts.join(' · ')) + '</span>'
+          +     tagParts.join('')
+          +   '</div>'
           + '</div>';
       }).join('');
-      sessionList.innerHTML = html;
+      sessionItems.innerHTML = html;
+      sessionNav.style.display = list.length > 3 ? 'flex' : 'none';
     }
 
     function openSessionList() {
@@ -4574,7 +4898,9 @@
         state.budget = MAX;
         closeSessionList();
         update();
-        contextSubPath = '';
+        // Use 'example' (not '') so re-renders stay in example mode.
+        // Empty path '' is reserved for "fresh navigation → default to session".
+        contextSubPath = 'example';
         try { pushState(false); } catch (e) { /* ignore */ }
       }
     }
@@ -4603,12 +4929,20 @@
       sessionTools.style.display = 'inline-flex';
       bottomBar.style.display = 'none';
       mainEl.style.paddingBottom = '16px';
-    } else if (deepLinkSid && replayableSessions.some((s) => s.id === deepLinkSid)) {
+    } else if (deepLinkSid && deepLinkSid !== 'example' && replayableSessions.some((s) => s.id === deepLinkSid)) {
       state.mode = 'session';
       sessionTools.style.display = 'inline-flex';
       bottomBar.style.display = 'none';
       mainEl.style.paddingBottom = '16px';
       selectSession(deepLinkSid);
+    } else if (!deepLinkSid && replayableSessions.length > 0) {
+      // Fresh navigation (#context with no sub-path) → default to session mode.
+      state.mode = 'session';
+      sessionTools.style.display = 'inline-flex';
+      bottomBar.style.display = 'none';
+      mainEl.style.paddingBottom = '16px';
+      contextSubPath = 'session';
+      try { pushState(false); } catch (e) { /* ignore */ }
     }
 
     // Initialize mode + sort tab styling on first render.
@@ -4666,7 +5000,7 @@
         if (first) selectSession(first.getAttribute('data-cw-pick'));
       }
     });
-    sessionList.addEventListener('mousedown', (e) => {
+    sessionItems.addEventListener('mousedown', (e) => {
       // mousedown (not click) so the input doesn't lose focus before we select.
       const row = e.target.closest('[data-cw-pick]');
       if (!row) return;
@@ -4676,12 +5010,31 @@
     document.addEventListener('mousedown', (e) => {
       if (!sessionTools.contains(e.target)) closeSessionList();
     });
+    // Session list scroll nav — sticky overlay inside the list
+    const listTopBtn = document.getElementById('cw-list-top');
+    const listBottomBtn = document.getElementById('cw-list-bottom');
+    if (listTopBtn) listTopBtn.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); sessionList.scrollTop = 0; });
+    if (listBottomBtn) listBottomBtn.addEventListener('mousedown', (e) => { e.preventDefault(); e.stopPropagation(); sessionList.scrollTop = sessionList.scrollHeight; });
+
+    // Timeline scroll nav — overlay at bottom-right, visible on hover
+    const tlNav = document.getElementById('cw-tl-nav');
+    const tlTopBtn = document.getElementById('cw-tl-top');
+    const tlBottomBtn = document.getElementById('cw-tl-bottom');
+    if (tlNav && timelineEl) {
+      const tlWrap = timelineEl.parentElement;
+      tlWrap.addEventListener('mouseenter', () => { tlNav.style.opacity = '1'; tlNav.style.pointerEvents = 'auto'; });
+      tlWrap.addEventListener('mouseleave', () => { tlNav.style.opacity = '0'; tlNav.style.pointerEvents = 'none'; });
+      if (tlTopBtn) tlTopBtn.addEventListener('click', () => { timelineEl.scrollTop = 0; updateVirtualRows(); });
+      if (tlBottomBtn) tlBottomBtn.addEventListener('click', () => { timelineEl.scrollTop = timelineEl.scrollHeight; updateVirtualRows(); });
+    }
+    // Virtual timeline: re-render visible rows on scroll
+    timelineEl.addEventListener('scroll', updateVirtualRows, { passive: true });
 
     sortBtns.forEach((b) => {
       b.addEventListener('click', () => {
         ui.sort = b.getAttribute('data-cw-sort');
         updateSortStyling();
-        if (sessionList.style.display === 'block') renderSessionList();
+        if (sessionList.style.display === 'flex') renderSessionList();
       });
     });
 

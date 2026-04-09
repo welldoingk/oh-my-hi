@@ -159,9 +159,9 @@ Built at build time in `generate-dashboard.mjs`. Persisted in `task-categories.j
 | Token: Prompt | `#tokens-prompt` | Prompt stats, response latency, hourly distribution, cache efficiency + tips |
 | Token: Session | `#tokens-session` | Session stats, top sessions table (clickable) |
 | Session Detail | `#session/{id}` | Session stat cards, models/skills/agents/MCP badges, activity timeline table |
-| Context Explorer | `#context` | Interactive simulator of what fills the context window during a session. Two modes: `Example` (scripted 36-step scenario using real startup measurements) and `Session` (`#context/{sessionId}` or `#context/session`) which replays a real session's token usage with per-turn delta/cumulative, auto-scaling 200K↔1M budget, category legend with percentage tooltips |
+| Context Explorer | `#context` | Interactive simulator of what fills the context window during a session. Defaults to Real session mode. Two modes: `Real session` (`#context/{sessionId}` or `#context/session`) — replays actual session token usage with per-turn delta/cumulative, auto-scaling 200K↔1M budget, 3-state terminal visibility eye icons; `Example` — scripted 36-step scenario using real startup measurements. Canvas bar + virtual scroll timeline for performance. |
 | Structure | `#structure` | Component flow SVG, file tree |
-| Help | `#help` | Parameters table, data parsing reference, token/activity reference |
+| Help | `#help` | Context Explorer guide, token/usage reference, parameters table, data parsing reference |
 | Category Overview | `#{categoryKey}` | Total count, usage stats, all items list |
 | Detail View | `#{categoryKey}/{name}` | Per-item detail (varies by category) |
 

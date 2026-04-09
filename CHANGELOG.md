@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.5.1] - 2026-04-09
+
+### Added
+- **Context Explorer: 3-state terminal visibility eye icons** — timeline rows now show a closed-eye icon (hidden from terminal), dash-eye icon (brief one-liner), or filled green eye+circle (full content shown).
+- **Visibility legend** in the Context Explorer bar area labels all three states inline.
+- **Help page: Context Explorer section** — documents the two modes, context bar, and timeline with visibility icons.
+- **Test coverage** for all new Context Explorer features: canvas bar functions, virtual scroll functions, tab order, eye icon SVGs, visibility legend, session-default navigation, and Help page content (131 → 140 tests).
+
+### Changed
+- **Context Explorer tab order** — Real session tab now appears before Example session tab.
+- **Default mode on navigation** — opening `#context` now lands on Real session mode (previously Example session).
+- **Scroll buttons** replaced emoji arrows with SVG triangles matching the current design language; timeline top/bottom buttons now jump instantly (no smooth-scroll animation).
+- **Context bar rendered as a single Canvas node** — replaced stacked `div` segments with a Canvas 2D API implementation for better rendering performance. Hit testing via stored segment coordinates with binary search.
+- **Timeline virtual scrolling** — `cw-tl-virt` container now renders only visible rows (+ buffer) with absolute positioning, eliminating DOM bloat on sessions with 1000+ events.
+- **Help page section order** — Context Explorer → Token & Usage → Parameters → Data Parsing Reference.
+
+### Fixed
+- **Build: template changes now trigger HTML rebuild** — `needsHtmlRebuild()` previously only checked the version string. Now compares mtime of `app.js`, `styles.css`, and `dashboard.html` against `index.html` so template edits are always reflected without manually deleting the output file.
+
 ## [0.5.0] - 2026-04-08
 
 ### Added

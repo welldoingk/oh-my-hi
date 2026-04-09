@@ -137,4 +137,27 @@ describe('Build', () => {
       assert.ok(html.includes(pkg.version));
     });
   });
+
+  describe('needsHtmlRebuild — template mtime check', () => {
+    const TEMPLATES = path.join(ROOT, 'templates');
+    const indexPath = path.join(OUTPUT, 'index.html');
+
+    it('index.html should be newer than all template files after build', () => {
+      const outMtime = fs.statSync(indexPath).mtimeMs;
+      for (const f of ['app.js', 'styles.css', 'dashboard.html']) {
+        const tmplMtime = fs.statSync(path.join(TEMPLATES, f)).mtimeMs;
+        assert.ok(outMtime >= tmplMtime,
+          `index.html (${outMtime}) should be >= ${f} mtime (${tmplMtime})`);
+      }
+    });
+
+    it('generate-dashboard.mjs should check template mtimes in needsHtmlRebuild', () => {
+      const script = fs.readFileSync(path.join(ROOT, 'scripts', 'generate-dashboard.mjs'), 'utf-8');
+      assert.ok(script.includes('needsHtmlRebuild'), 'needsHtmlRebuild function defined');
+      assert.ok(script.includes('mtimeMs'), 'mtime comparison present');
+      assert.ok(script.includes("'app.js'"), 'app.js in template file list');
+      assert.ok(script.includes("'styles.css'"), 'styles.css in template file list');
+      assert.ok(script.includes("'dashboard.html'"), 'dashboard.html in template file list');
+    });
+  });
 });

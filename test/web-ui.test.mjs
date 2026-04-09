@@ -156,6 +156,57 @@ describe('Web UI — Templates', () => {
       assert.ok(js.includes('firstrun-banner'), 'firstrun-banner class used');
       assert.ok(js.includes('firstrun-close'), 'firstrun-close class used');
     });
+
+    it('should have Context Explorer canvas bar functions', () => {
+      assert.ok(js.includes('function renderBarSegments'), 'renderBarSegments defined');
+      assert.ok(js.includes('function barSegmentAt'), 'barSegmentAt defined');
+      assert.ok(js.includes("getContext('2d')"), 'canvas 2d context used');
+      assert.ok(js.includes('devicePixelRatio'), 'DPR-aware canvas rendering');
+      assert.ok(js.includes("id=\"cw-bar\""), 'canvas element with cw-bar id');
+    });
+
+    it('should have Context Explorer virtual scroll functions', () => {
+      assert.ok(js.includes('function computeTlLayout'), 'computeTlLayout defined');
+      assert.ok(js.includes('function updateVirtualRows'), 'updateVirtualRows defined');
+      assert.ok(js.includes('TL_ROW_H'), 'TL_ROW_H constant defined');
+      assert.ok(js.includes("id=\"cw-tl-virt\""), 'virtual scroll container present');
+      assert.ok(js.includes('position:absolute'), 'absolute positioning for virtual rows');
+    });
+
+    it('should have Context Explorer session-first tab order', () => {
+      const sessionIdx = js.indexOf("data-cw-mode=\"session\"");
+      const exampleIdx = js.indexOf("data-cw-mode=\"example\"");
+      assert.ok(sessionIdx !== -1, 'session mode tab exists');
+      assert.ok(exampleIdx !== -1, 'example mode tab exists');
+      assert.ok(sessionIdx < exampleIdx, 'session tab comes before example tab');
+    });
+
+    it('should have three-state eye icons for terminal visibility', () => {
+      assert.ok(js.includes("evt.vis === 'hidden'"), 'hidden state check');
+      assert.ok(js.includes("evt.vis === 'brief'"), 'brief state check');
+      // SVG paths for the three distinct icons
+      assert.ok(js.includes('x1="1" y1="1" x2="23" y2="23"'), 'closed-eye slash line for hidden');
+      assert.ok(js.includes('x1="9" y1="12" x2="15" y2="12"'), 'dash-eye line for brief');
+    });
+
+    it('should have visibility legend in Context Explorer bar area', () => {
+      assert.ok(js.includes('cwe_visHidden'), 'hidden legend key used');
+      assert.ok(js.includes('cwe_visBrief'), 'brief legend key used');
+      assert.ok(js.includes('cwe_visFull'), 'full legend key used');
+    });
+
+    it('should default to session mode on fresh Context Explorer navigation', () => {
+      assert.ok(js.includes("contextSubPath = 'session'"), 'session mode set as default');
+      assert.ok(js.includes("contextSubPath = 'example'"), 'example mode path tracked');
+    });
+
+    it('should have Help page Context Explorer section', () => {
+      assert.ok(js.includes('helpContextExplorer'), 'helpContextExplorer key used in renderHelp');
+      assert.ok(js.includes('helpCweSession'), 'helpCweSession key used');
+      assert.ok(js.includes('helpCweExample'), 'helpCweExample key used');
+      assert.ok(js.includes('helpCweBar'), 'helpCweBar key used');
+      assert.ok(js.includes('helpCweTimeline'), 'helpCweTimeline key used');
+    });
   });
 
   describe('styles.css', () => {
@@ -246,6 +297,16 @@ describe('Web UI — Templates', () => {
         'unusedCleanupTipTitle', 'unusedCleanupTipDetail',
         'cacheTipLowHitTitle', 'cacheTipGoodTitle', 'cacheTipHighCreationTitle', 'cacheTipNoSessionTitle',
         'firstRunBannerMsg', 'close',
+        // Context Explorer
+        'helpContextExplorer', 'helpContextExplorerDesc',
+        'helpCweExample', 'helpCweExampleDesc',
+        'helpCweSession', 'helpCweSessionDesc',
+        'helpCweBar', 'helpCweBarDesc',
+        'helpCweTimeline', 'helpCweTimelineDesc',
+        'cwe_visHidden', 'cwe_visHiddenSub',
+        'cwe_visBrief', 'cwe_visBriefSub',
+        'cwe_visFull', 'cwe_visFullSub',
+        'cwe_modeSession', 'cwe_modeExample',
       ];
       for (const key of requiredKeys) {
         assert.ok(en[key], `missing en key: ${key}`);
