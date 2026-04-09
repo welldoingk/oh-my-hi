@@ -1,5 +1,53 @@
 'use strict';
 
+/* =============================================================================
+ * app.js — oh-my-hi dashboard client script (browser bundle)
+ * -----------------------------------------------------------------------------
+ * This file is injected verbatim into dashboard.html at build time, inside a
+ * single <script> block. It has no ESM exports — everything is script-scoped.
+ * Helper modules from templates/*.mjs are stripped of `export` and prepended
+ * to this file by scripts/generate-dashboard.mjs.
+ *
+ * Table of contents (search the marker to jump):
+ *
+ *   // ── Restore minified usage data ──   DATA unpacking (key rehydration)
+ *   // ── i18n ──                          t(), locales, numLocale
+ *   // ── Dark mode ──                     theme toggle + bb dark CSS swap
+ *   // ── Constants ──                     CATEGORIES, color maps
+ *   // ── State ──                         currentScope/View/Detail, ui flags
+ *   // ── DOM refs ──                      sidebarNav, content, searchInput
+ *   // ── Init ──                          init(), theme/help/lang buttons
+ *   // ── History / Hash ──                pushState, applyHash routing
+ *   // ── Data helpers ──                  getScopeData, getItems, countUsage
+ *   // ── Date formatting ──               formatDate, relativeTime, fmtNum
+ *   // ── Simple Markdown renderer ──      renderMarkdown + fmtCompact/fmtCost
+ *   // ── Data range helpers ──            computeDateRange
+ *   // ── Render orchestration ──          render(), renderContent()
+ *   // ── Sidebar rendering ──             renderSidebar, category cap logic
+ *   // ── Content rendering ──             dispatch by currentView
+ *   // ── Period filter with calendar ──   left-panel period buttons
+ *   // ── Calendar Picker ──               custom date range overlay
+ *   // ── Tokens page ──                   #tokens root
+ *   // ── Tokens: Cost sub-page ──         #tokens-cost
+ *   // ── Tokens: Prompt sub-page ──       #tokens-prompt
+ *   // ── Tokens: Session sub-page ──      #tokens-session + session detail
+ *   // ── Overview page ──                 #overview
+ *   // ── Charts (billboard.js) ──         drawTokenTrendChart, drawRotatedBar…
+ *   // ── Insights ──                      renderInsights cards
+ *   // ── Help page ──                     #help
+ *   // ── Structure page ──                #structure
+ *   // ── Flowchart (hierarchical) ──      drawFlowchart SVG builder
+ *   // ── Context Window Explorer ──       #context (example + session modes)
+ *   // ── Category overview page ──        #{category}
+ *   // ── Detail views ──                  #{category}/{name}
+ *   // ── Detail-page helpers ──           filePathBlock, descriptionBlock…
+ *   // ── Content action binding ──        delegated click handlers
+ *   // ── Data staleness check ──          update banner trigger
+ *   // ── Partial data banner ──           progressive first-run UX
+ *   // ── New-data banner ──               firstRun dismiss
+ *   // ── Boot ──                          init() entry point
+ * ========================================================================== */
+
   // ── Restore minified usage data ──
   if (typeof DATA !== 'undefined' && DATA._minified) {
     const _KEY_REV = {
@@ -104,6 +152,13 @@
   let currentPeriod = parseInt(localStorage.getItem('harness-period') || '30');
   let customDateRange = null; // { start: Date, end: Date }
   const expandedCategories = {};
+  // Sidebar progressive rendering: categories with more children than
+  // SIDEBAR_ITEM_LIMIT are truncated to the first N entries on first expand,
+  // with a "show all" footer. Large skill/agent lists (500+) used to dump
+  // hundreds of DOM nodes at once on expand — this caps the initial cost and
+  // lets users opt-in via click (or use search, which always shows all hits).
+  const SIDEBAR_ITEM_LIMIT = 50;
+  const sidebarShowAll = new Set();
   let searchQuery = '';
   let tokenBudget = JSON.parse(localStorage.getItem('harness-budget') || 'null');
   let currentSessionId = null;
@@ -147,14 +202,25 @@
       const isDark = document.body.classList.toggle('dark');
       localStorage.setItem('harness-theme', isDark ? 'dark' : 'light');
       themeBtn.textContent = isDark ? '☀️' : '🌙';
-      // Toggle billboard.js dark theme
+      // Toggle billboard.js dark theme — swaps a <style> block. The chart SVGs
+      // restyle via CSS on the next paint, no regeneration needed.
       setBbDarkTheme(isDark);
-      // Re-render while preserving scroll position
-      const scrollPos = content.scrollTop;
-      skipScrollReset = true;
-      renderContent();
-      skipScrollReset = false;
-      requestAnimationFrame(function () { content.scrollTop = scrollPos; });
+      // Most pages are purely CSS-themed, so a full renderContent() rebuild is
+      // wasted work (DOM churn, chart regen, scroll save/restore flicker).
+      // Only these views compute theme-dependent values in JS and need a
+      // rebuild to pick up the new theme:
+      //   - overview: drawDonutChart uses getComputedStyle to resolve CSS var colors
+      //   - context:  Context Explorer floatTip reads classList.contains('dark')
+      //   - structure: flowchart uses hardcoded hex colors that look wrong in
+      //                the opposite theme and need re-render for correct swap
+      const THEME_REBUILD_VIEWS = { overview: 1, context: 1, structure: 1 };
+      if (THEME_REBUILD_VIEWS[currentView] && !currentDetail) {
+        const scrollPos = content.scrollTop;
+        skipScrollReset = true;
+        renderContent();
+        skipScrollReset = false;
+        requestAnimationFrame(function () { content.scrollTop = scrollPos; });
+      }
     });
 
     // Help button
@@ -238,6 +304,8 @@
     searchInput.placeholder = t('searchPlaceholder');
     const scopeLabel = document.querySelector('.scope-label');
     if (scopeLabel) scopeLabel.textContent = t('scopeLabel');
+    const tagline = document.getElementById('sidebar-logo-tagline');
+    if (tagline) tagline.textContent = t('tagline');
   }
 
   function updateLangToggle() {
@@ -585,12 +653,25 @@
     _numFmt = new Intl.NumberFormat(t('numLocale'));
   }
 
-  /** Format large number compactly (e.g., 10.2k) for donut center */
+  /**
+   * Canonical number formatter — see docs/number-formatting.md for the rules.
+   *   - Absolute value < 10,000 → Intl.NumberFormat (locale-aware thousands
+   *     separator, keeps full precision for small numbers)
+   *   - ≥ 10,000 → SI prefix (K / M / B). Decimal kept only when meaningful
+   *     (e.g. 12.3K, but 12K instead of 12.0K)
+   * This is the ONE function that should be used for every number the user
+   * sees in the dashboard. Use fmtNum if you explicitly want no SI conversion
+   * (rare — for IDs, versions, etc.), and fmtCost for currency.
+   */
   function fmtCompact(n) {
-    if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B';
-    if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
-    if (n >= 1e4) return (n / 1e3).toFixed(1) + 'K';
-    return fmtNum(n);
+    if (typeof n !== 'number' || !isFinite(n)) return String(n);
+    const abs = Math.abs(n);
+    if (abs < 1e4) return fmtNum(n);
+    const sign = n < 0 ? '-' : '';
+    const stripZero = (v) => v.toFixed(1).replace(/\.0$/, '');
+    if (abs >= 1e9) return sign + stripZero(abs / 1e9) + 'B';
+    if (abs >= 1e6) return sign + stripZero(abs / 1e6) + 'M';
+    return sign + stripZero(abs / 1e3) + 'K';
   }
 
   function fmtCost(n) {
@@ -728,7 +809,13 @@
         + '</div>';
 
       html += '<div class="nav-children' + (isExpanded ? ' open' : '') + '" data-children="' + cat.key + '">';
-      filteredItems.forEach((item) => {
+      // Only cap when there is no active search; search results are already
+      // narrowed so hiding them would defeat the point.
+      const shouldCap = !searchQuery
+        && !sidebarShowAll.has(cat.key)
+        && filteredItems.length > SIDEBAR_ITEM_LIMIT;
+      const visibleItems = shouldCap ? filteredItems.slice(0, SIDEBAR_ITEM_LIMIT) : filteredItems;
+      visibleItems.forEach((item) => {
         let name = getItemName(cat.key, item);
         const isChildActive = currentDetail && currentDetail.category === cat.key && currentDetail.name === name;
         html += '<div class="nav-child' + (isChildActive ? ' active' : '') + '" data-action="detail" data-category="' + cat.key + '" data-name="' + escapeHtml(name) + '" title="' + escapeHtml(name) + '">'
@@ -736,6 +823,13 @@
           + '<span class="label">' + escapeHtml(name) + '</span>'
           + '</div>';
       });
+      if (shouldCap) {
+        const remaining = filteredItems.length - SIDEBAR_ITEM_LIMIT;
+        html += '<div class="nav-child nav-child-more" data-action="show-all" data-category="' + cat.key + '" title="' + escapeHtml(t('sidebarShowAll')) + '">'
+          + '<span class="dot" style="background:transparent;border:1px dashed ' + cat.color + '"></span>'
+          + '<span class="label">' + escapeHtml(t('sidebarShowMore').replace('{0}', fmtNum(remaining))) + '</span>'
+          + '</div>';
+      }
       html += '</div>';
     });
 
@@ -767,6 +861,11 @@
         expandedCategories[cat2] = true;
         pushState(true);
         render();
+      } else if (action === 'show-all') {
+        // Reveal the rest of a capped category without any other state change.
+        // Only the sidebar needs to rebuild; content stays put.
+        sidebarShowAll.add(navItemEl.dataset.category);
+        renderSidebar();
       } else if (action === 'nav') {
         currentView = navItemEl.dataset.view;
         currentDetail = null;
@@ -2994,6 +3093,7 @@
       + helpRow('helpCweExample', 'helpCweExampleDesc', '▶')
       + helpRow('helpCweBar', 'helpCweBarDesc', '▬')
       + helpRow('helpCweTimeline', 'helpCweTimelineDesc', '⋮')
+      + helpRow('helpCweSessionInfo', 'helpCweSessionInfoDesc', 'ℹ')
       + '</div>'
       + '<div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">'
       + '<a href="#context" style="font-size:13px;font-weight:600;color:var(--accent);text-decoration:none">→ ' + t('helpContextExplorer') + '</a>'
@@ -3362,66 +3462,10 @@
 
     // Each event has an `id` used to look up `cwe_ev{id}_label`, `_desc`, and optionally `_tip`.
     // `statKey` points to a field in `stats` that overrides `tokens` (or `subTokens` for sub events).
-    const EXAMPLE_EVENTS = [
-      { id: 1,  t: 0.015, kind: 'auto',   tokens: 4200, color: '#6B6964', vis: 'hidden', link: null },
-      { id: 2,  t: 0.035, kind: 'auto',   tokens: 680,  color: '#E8A45C', vis: 'hidden', statKey: 'autoMemoryTokens',  link: 'https://code.claude.com/docs/en/memory#auto-memory' },
-      { id: 3,  t: 0.06,  kind: 'auto',   tokens: 280,  color: '#6B6964', vis: 'hidden', link: null },
-      { id: 4,  t: 0.08,  kind: 'auto',   tokens: 120,  color: '#9B7BC4', vis: 'hidden', statKey: 'mcpToolsTokens',    link: 'https://code.claude.com/docs/en/mcp#scale-with-mcp-tool-search' },
-      { id: 5,  t: 0.10,  kind: 'auto',   tokens: 450,  color: '#D4A843', vis: 'hidden', statKey: 'skillsDescTokens',  noSurviveCompact: true, link: 'https://code.claude.com/docs/en/skills' },
-      { id: 6,  t: 0.12,  kind: 'auto',   tokens: 320,  color: '#6A9BCC', vis: 'hidden', statKey: 'globalClaudeTokens',link: 'https://code.claude.com/docs/en/memory#choose-where-to-put-claude-md-files' },
-      { id: 7,  t: 0.14,  kind: 'auto',   tokens: 1800, color: '#6A9BCC', vis: 'hidden', statKey: 'projectClaudeTokens', hasTip: true, link: 'https://code.claude.com/docs/en/memory' },
-      { id: 8,  t: 0.22,  kind: 'user',   tokens: 45,   color: '#558A42', vis: 'full',   link: null },
-      { id: 9,  t: 0.28,  kind: 'claude', tokens: 2400, color: '#8A8880', vis: 'brief',  hasTip: true, link: null },
-      { id: 10, t: 0.32,  kind: 'claude', tokens: 1100, color: '#8A8880', vis: 'brief',  link: null },
-      { id: 11, t: 0.35,  kind: 'auto',   tokens: 380,  color: '#4A9B8E', vis: 'brief',  link: 'https://code.claude.com/docs/en/memory#path-specific-rules' },
-      { id: 12, t: 0.38,  kind: 'claude', tokens: 1800, color: '#8A8880', vis: 'brief',  link: null },
-      { id: 13, t: 0.41,  kind: 'claude', tokens: 1600, color: '#8A8880', vis: 'brief',  link: null },
-      { id: 14, t: 0.44,  kind: 'auto',   tokens: 290,  color: '#4A9B8E', vis: 'brief',  link: 'https://code.claude.com/docs/en/memory#path-specific-rules' },
-      { id: 15, t: 0.47,  kind: 'claude', tokens: 600,  color: '#A09E96', vis: 'brief',  link: null },
-      { id: 16, t: 0.53,  kind: 'claude', tokens: 800,  color: '#D97757', vis: 'full',   link: null },
-      { id: 17, t: 0.57,  kind: 'claude', tokens: 400,  color: '#D97757', vis: 'full',   link: null },
-      { id: 18, t: 0.59,  kind: 'hook',   tokens: 120,  color: '#B8860B', vis: 'hidden', hasTip: true, link: 'https://code.claude.com/docs/en/hooks-guide' },
-      { id: 19, t: 0.62,  kind: 'claude', tokens: 600,  color: '#D97757', vis: 'full',   link: null },
-      { id: 20, t: 0.64,  kind: 'hook',   tokens: 100,  color: '#B8860B', vis: 'hidden', link: 'https://code.claude.com/docs/en/hooks-guide' },
-      { id: 21, t: 0.67,  kind: 'claude', tokens: 1200, color: '#A09E96', vis: 'brief',  link: null },
-      { id: 22, t: 0.70,  kind: 'claude', tokens: 400,  color: '#D97757', vis: 'full',   link: null },
-      { id: 23, t: 0.72,  kind: 'user',   tokens: 40,   color: '#558A42', vis: 'full',   hasTip: true, link: null },
-      { id: 24, t: 0.79,  kind: 'claude', tokens: 80,   color: '#D97757', vis: 'brief',  link: 'https://code.claude.com/docs/en/sub-agents' },
-      { id: 25, t: 0.795, kind: 'sub',    tokens: 0, subTokens: 900,  color: '#6B6964', vis: 'hidden', link: 'https://code.claude.com/docs/en/sub-agents#enable-persistent-memory' },
-      { id: 26, t: 0.80,  kind: 'sub',    tokens: 0, subTokens: 1800, color: '#6A9BCC', vis: 'hidden', statKey: 'projectClaudeTokens', subStat: true, link: 'https://code.claude.com/docs/en/sub-agents' },
-      { id: 27, t: 0.805, kind: 'sub',    tokens: 0, subTokens: 970,  color: '#9B7BC4', vis: 'hidden', statKey: 'mcpPlusSkills',       subStat: true, link: 'https://code.claude.com/docs/en/sub-agents' },
-      { id: 28, t: 0.81,  kind: 'sub',    tokens: 0, subTokens: 120,  color: '#558A42', vis: 'hidden', link: 'https://code.claude.com/docs/en/sub-agents' },
-      { id: 29, t: 0.82,  kind: 'sub',    tokens: 0, subTokens: 2200, color: '#8A8880', vis: 'hidden', link: 'https://code.claude.com/docs/en/sub-agents' },
-      { id: 30, t: 0.825, kind: 'sub',    tokens: 0, subTokens: 800,  color: '#8A8880', vis: 'hidden', link: 'https://code.claude.com/docs/en/sub-agents' },
-      { id: 31, t: 0.83,  kind: 'sub',    tokens: 0, subTokens: 3100, color: '#8A8880', vis: 'hidden', link: 'https://code.claude.com/docs/en/sub-agents' },
-      { id: 32, t: 0.85,  kind: 'claude', tokens: 420, color: '#D97757', vis: 'brief',   link: 'https://code.claude.com/docs/en/sub-agents' },
-      { id: 33, t: 0.86,  kind: 'claude', tokens: 1200, color: '#D97757', vis: 'full',   link: null },
-      { id: 34, t: 0.875, kind: 'user',   tokens: 180, color: '#558A42', vis: 'full',    link: 'https://code.claude.com/docs/en/interactive-mode#bash-mode-with-prefix' },
-      { id: 35, t: 0.89,  kind: 'user',   tokens: 620, color: '#558A42', vis: 'brief',   hasTip: true, link: 'https://code.claude.com/docs/en/skills#control-who-invokes-a-skill' },
-      { id: 36, t: 0.93,  kind: 'compact',tokens: 0,   color: '#D97757', vis: 'brief',   link: 'https://code.claude.com/docs/en/how-claude-code-works#the-context-window' }
-    ];
-
-    const EXAMPLE_GATES = [
-      { at: 0.18,  kind: 'prompt',  gateKey: 'cwe_gate1', resumeTo: 0.22 },
-      { at: 0.705, kind: 'prompt',  gateKey: 'cwe_gate2', resumeTo: 0.72 },
-      { at: 0.865, kind: 'bang',    gateKey: 'cwe_gate3', resumeTo: 0.875 },
-      { at: 0.88,  kind: 'slash',   gateKey: 'cwe_gate4', resumeTo: 0.89 },
-      { at: 0.90,  kind: 'compact', gateKey: 'cwe_gate5', resumeTo: 1 }
-    ];
-
-    const KIND_META = {
-      auto:    { badgeKey: 'cwe_kindAuto',    detailKey: 'cwe_kindAutoDetail',    badgeBg: 'rgba(94,93,89,0.15)',  badgeColor: '#8A8880' },
-      user:    { badgeKey: 'cwe_kindUser',    detailKey: 'cwe_kindUserDetail',    badgeBg: 'rgba(85,138,66,0.15)', badgeColor: '#6BA656' },
-      claude:  { badgeKey: 'cwe_kindClaude',  detailKey: 'cwe_kindClaudeDetail',  badgeBg: 'rgba(217,119,87,0.12)',badgeColor: '#D97757' },
-      hook:    { badgeKey: 'cwe_kindHook',    detailKey: 'cwe_kindHookDetail',    badgeBg: 'rgba(184,134,11,0.15)',badgeColor: '#CCA020' },
-      compact: { badgeKey: 'cwe_kindCompact', detailKey: 'cwe_kindCompactDetail', badgeBg: 'rgba(217,119,87,0.12)',badgeColor: '#D97757' },
-      sub:     { badgeKey: 'cwe_kindSub',     detailKey: 'cwe_kindSubDetail',     badgeBg: 'rgba(155,123,196,0.12)',badgeColor: '#9B7BC4' },
-      // Session-mode kinds — distinct badges so skill/mcp/tool/agent aren't mislabeled as "claude".
-      skill:   { badgeKey: 'cwe_kindSkill',   detailKey: 'cwe_kindSkillDetail',   badgeBg: 'rgba(212,168,67,0.15)', badgeColor: '#B8890B' },
-      mcp:     { badgeKey: 'cwe_kindMcp',     detailKey: 'cwe_kindMcpDetail',     badgeBg: 'rgba(155,123,196,0.12)',badgeColor: '#9B7BC4' },
-      agent:   { badgeKey: 'cwe_kindAgent',   detailKey: 'cwe_kindAgentDetail',   badgeBg: 'rgba(155,123,196,0.12)',badgeColor: '#9B7BC4' },
-      tool:    { badgeKey: 'cwe_kindTool',    detailKey: 'cwe_kindToolDetail',    badgeBg: 'rgba(138,136,128,0.15)',badgeColor: '#6E6C64' }
-    };
+    // EXAMPLE_EVENTS / EXAMPLE_GATES / KIND_META are defined in
+    // templates/context-example.mjs and prepended to this file at build time.
+    // They're treated as read-only constants here; update the .mjs source
+    // when adding new events or kinds.
 
     const VIS_META = {
       hidden: { labelKey: 'cwe_visHidden', subKey: 'cwe_visHiddenSub' },
@@ -3490,202 +3534,40 @@
     // Build the list of "sessions that can be replayed" — sessions with at least 2 token
     // entries so there is a meaningful timeline. Each entry carries a short preview
     // of the first user prompt so the dropdown is recognizable, not just a hash.
-    function listReplayableSessions() {
-      const usage = getUsage();
-      const entries = (usage && usage.tokenEntries) || [];
-      const prompts = (usage && usage.promptStats) || [];
-      const map = {};
-      entries.forEach((e) => {
-        const sid = e.sessionId;
-        if (!sid) return;
-        if (!map[sid]) map[sid] = { id: sid, count: 0, minTs: Infinity, maxTs: 0, firstPrompt: null, model: null, peakTokens: 0 };
-        const s = map[sid];
-        s.count += 1;
-        const ts = typeof e.timestamp === 'number' ? e.timestamp : new Date(e.timestamp).getTime();
-        if (ts < s.minTs) s.minTs = ts;
-        if (ts > s.maxTs) { s.maxTs = ts; s.model = e.model || s.model; }
-        if ((e.inputTokens || 0) > s.peakTokens) s.peakTokens = e.inputTokens || 0;
-      });
-      // Pull the earliest promptStats text for each session (if the parser captured it).
-      prompts.forEach((p) => {
-        if (!p.sessionId || !map[p.sessionId]) return;
-        const ts = typeof p.timestamp === 'number' ? p.timestamp : new Date(p.timestamp).getTime();
-        const cur = map[p.sessionId].firstPrompt;
-        if (!cur || ts < cur.ts) {
-          map[p.sessionId].firstPrompt = { ts: ts, text: p.text || p.preview || null, len: p.charLen || 0 };
-        }
-      });
-      return Object.values(map).filter((s) => s.count >= 2).sort((a, b) => b.maxTs - a.maxTs);
+    // Thin closure wrappers around the pure helpers defined in
+    // templates/session-events.mjs (inlined by the build). These shadow the
+    // module-level names so the rest of renderContextExplorer can call them
+    // with the existing zero-arg / single-arg signatures. The logic itself
+    // lives in the testable module — don't put business rules here.
+    const _listReplayableSessionsPure = listReplayableSessions;
+    const _mapSessionCtxPure = mapSessionCtx;
+    const _buildSessionEventsPure = buildSessionEvents;
+    function listReplayableSessionsScoped() {
+      return _listReplayableSessionsPure(getUsage());
     }
-
-    // Map a usage-entry context to a (kind, color) pair for timeline rendering.
-    // Each context type gets its own `kind` so KIND_META can show a distinct badge.
-    function mapSessionCtx(ctx, ctxName) {
-      // Color palette matches LEGEND entries.
-      const TOOL_COLORS = {
-        Read:   '#8A8880', Grep:   '#8A8880', Glob:   '#8A8880',
-        Write:  '#D97757', Edit:   '#D97757', MultiEdit: '#D97757',
-        Bash:   '#A09E96', WebFetch: '#A09E96', WebSearch: '#A09E96',
-        TodoWrite: '#A09E96', NotebookEdit: '#D97757'
+    function buildSessionEventsScoped(sessionId) {
+      const contextStats = (getScopeData() || {}).contextStats || {};
+      const labels = {
+        ev1: t('cwe_ev1_label'),
+        ev2: t('cwe_ev2_label'),
+        ev3: t('cwe_ev3_label'),
+        ev4: t('cwe_ev4_label'),
+        ev5: t('cwe_ev5_label'),
+        ev6: t('cwe_ev6_label'),
+        ev7: t('cwe_ev7_label'),
+        principles: t('catPrinciples'),
       };
-      switch (ctx) {
-        case 'skill': return { kind: 'skill', color: '#D4A843' };
-        case 'mcp':   return { kind: 'mcp',   color: '#9B7BC4' };
-        case 'agent': return { kind: 'agent', color: '#9B7BC4' };
-        case 'tool':  return { kind: 'tool',  color: TOOL_COLORS[ctxName] || '#8A8880' };
-        default:      return { kind: 'claude', color: '#D97757' }; // general / conversation
-      }
+      return _buildSessionEventsPure(sessionId, getUsage(), contextStats, labels);
     }
 
     // Build a timeline of events from a real session's tokenEntries.
-    // Each API turn in the conversation becomes one event whose `_tokens` is the
-    // delta since the previous entry and whose `cumulative` is the raw inputTokens
-    // at that point (i.e. the true context window size seen by the model).
-    function buildSessionEvents(sessionId) {
-      const usage = getUsage();
-      const entries = ((usage && usage.tokenEntries) || [])
-        .filter((e) => e.sessionId === sessionId)
-        .map((e) => Object.assign({}, e, {
-          _ts: typeof e.timestamp === 'number' ? e.timestamp : new Date(e.timestamp).getTime()
-        }))
-        .sort((a, b) => a._ts - b._ts);
-      if (entries.length === 0) return [];
+    // Each API turn in the conversation becomes one event — see the extracted
+    // buildSessionEvents in templates/session-events.mjs for the details.
 
-      const promptStats = ((usage && usage.promptStats) || [])
-        .filter((p) => p.sessionId === sessionId)
-        .map((p) => typeof p.timestamp === 'number' ? p.timestamp : new Date(p.timestamp).getTime());
-
-      const minTs = entries[0]._ts;
-      const maxTs = entries[entries.length - 1]._ts;
-      const span = Math.max(1, maxTs - minTs);
-
-      const out = [];
-      let prevInput = 0;
-      entries.forEach((e, i) => {
-        const cumulative = e.inputTokens || 0;
-        let delta = cumulative - prevInput;
-        // Large negative delta while the model stays the same → /compact detected.
-        const isCompact = i > 0 && delta < -Math.max(1000, prevInput * 0.2);
-        const nearUserPrompt = promptStats.some((pts) => Math.abs(pts - e._ts) <= 2000);
-        let kind, color;
-        if (isCompact) {
-          kind = 'compact'; color = '#D97757';
-        } else if (nearUserPrompt) {
-          kind = 'user'; color = '#558A42';
-        } else {
-          const m = mapSessionCtx(e.context, e.contextName);
-          kind = m.kind; color = m.color;
-        }
-        // For compaction, delta is negative — store 0 as display tokens but keep raw cumulative.
-        const displayTokens = Math.max(0, delta);
-        out.push({
-          isSession: true,
-          id: -(i + 1), // negative ids avoid collision with EXAMPLE_EVENTS i18n keys
-          t: (e._ts - minTs) / span,
-          kind: kind,
-          tokens: displayTokens,
-          color: color,
-          vis: kind === 'user' ? 'full' : 'brief',
-          link: null,
-          cumulative: cumulative,
-          delta: delta,
-          model: e.model,
-          timestamp: e._ts,
-          contextName: e.contextName || (e.context === 'general' ? 'conversation' : e.context),
-          rawInput: e.rawInput || 0,
-          cacheRead: e.cacheRead || 0,
-          cacheCreation: e.cacheCreation || 0,
-          outputTokens: e.outputTokens || 0
-        });
-        prevInput = cumulative;
-      });
-
-      // Prepend synthetic startup context events estimated from contextStats.
-      // These represent items auto-loaded before the first turn (CLAUDE.md, memory, skills, MCP)
-      // that are baked into the first entry's inputTokens but not broken out in the transcript.
-      const cs = getScopeData().contextStats || {};
-      const startupDefs = [
-        { key: 'globalClaudeTokens',  color: '#6A9BCC', label: t('cwe_ev6_label') },
-        { key: 'projectClaudeTokens', color: '#6A9BCC', label: t('cwe_ev7_label') },
-        { key: 'autoMemoryTokens',    color: '#E8A45C', label: t('cwe_ev2_label') },
-        { key: 'skillsDescTokens',    color: '#D4A843', label: t('cwe_ev5_label') },
-        { key: 'mcpToolsTokens',      color: '#9B7BC4', label: t('cwe_ev4_label') },
-        { key: 'principlesTokens',    color: '#4f46e5', label: t('catPrinciples') },
-      ];
-      const synthetic = [];
-      let syntheticTotal = 0;
-      startupDefs.forEach((def, i) => {
-        const toks = cs[def.key] || 0;
-        if (toks <= 0) return;
-        syntheticTotal += toks;
-        synthetic.push({
-          isSession: true,
-          isSynthetic: true,
-          id: -(9000 + i),
-          t: -(startupDefs.length - synthetic.length) * 0.001,
-          kind: 'auto',
-          tokens: toks,
-          color: def.color,
-          vis: 'hidden',
-          link: null,
-          cumulative: 0,
-          delta: toks,
-          model: null,
-          timestamp: null,
-          contextName: def.label,
-          rawInput: 0,
-          cacheRead: 0,
-          cacheCreation: 0,
-          outputTokens: 0
-        });
-      });
-
-      // Estimate system prompt + environment info as the residual of the first entry
-      // (first entry's inputTokens − rawInput − measured startup items).
-      // This captures internal Claude Code context that isn't directly measurable.
-      if (entries.length > 0) {
-        const firstRawInput = entries[0].rawInput || 0;
-        const firstInputTokens = entries[0].inputTokens || 0;
-        const residual = Math.max(0, firstInputTokens - firstRawInput - syntheticTotal);
-        if (residual > 200) {
-          syntheticTotal += residual;
-          synthetic.unshift({
-            isSession: true,
-            isSynthetic: true,
-            id: -8999,
-            t: -(synthetic.length + 2) * 0.001,
-            kind: 'auto',
-            tokens: residual,
-            color: '#6B6964',
-            vis: 'hidden',
-            link: null,
-            cumulative: 0,
-            delta: residual,
-            model: null,
-            timestamp: null,
-            contextName: t('cwe_ev1_label') + ' · ' + t('cwe_ev3_label'),
-            rawInput: 0,
-            cacheRead: 0,
-            cacheCreation: 0,
-            outputTokens: 0
-          });
-        }
-      }
-
-      // Reduce the first real event's delta to avoid double-counting startup tokens
-      if (synthetic.length > 0 && out.length > 0) {
-        const adjusted = Math.max(0, out[0].tokens - syntheticTotal);
-        out[0] = Object.assign({}, out[0], { tokens: adjusted, delta: out[0].delta - (out[0].tokens - adjusted) });
-      }
-
-      return synthetic.concat(out);
-    }
-
-    const fmt = (n) => {
-      if (n >= 1000000) return (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
-      if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
-      return n + '';
-    };
+    // Delegate to the canonical fmtCompact so Context Explorer numbers follow
+    // the same Intl.NumberFormat + SI rules as the rest of the dashboard.
+    // Kept as a local alias to minimize churn at the call sites.
+    const fmt = fmtCompact;
     const renderCode = (s) => {
       if (!s) return '';
       return escapeHtml(s).split('`').map((p, i) => i % 2 === 1
@@ -3845,7 +3727,8 @@
       +       '<div id="cw-detail" class="cw-scroll" style="padding:14px 16px;border-radius:10px;background:var(--cw-surface);border:1px solid var(--cw-border);flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:10px"></div>'
       +     '</div>'
       +   '</div>'
-      +   '<div style="padding:10px 20px 16px;display:flex;align-items:center;gap:10px">'
+      +   '<div id="cw-session-info" style="display:none;padding:10px 20px 16px;align-items:center;gap:16px;font-size:12px;color:var(--cw-text-dim);flex-wrap:wrap"></div>'
+      +   '<div id="cw-playback-bar" style="padding:10px 20px 16px;display:flex;align-items:center;gap:10px">'
       +     '<button id="cw-play" aria-label="Play" style="width:30px;height:30px;border-radius:6px;border:none;background:rgba(217,119,87,0.1);color:#D97757;cursor:pointer;font-size:15px;font-weight:700;display:flex;align-items:center;justify-content:center">▶</button>'
       +     '<button id="cw-skip" title="' + escapeHtml(t('cwe_skipToEnd')) + '" style="width:28px;height:28px;border-radius:6px;border:1px solid var(--cw-border);background:var(--cw-surface);color:var(--cw-text-dim);cursor:pointer;font-size:13px;flex-shrink:0;display:flex;align-items:center;justify-content:center">⏭</button>'
       +     '<div style="flex:1;height:3px;border-radius:2px;background:var(--cw-track);overflow:hidden">'
@@ -3871,6 +3754,7 @@
     const percentEl = document.getElementById('cw-percent');
     const fsBtn = document.getElementById('cw-fs');
     const mainEl = document.getElementById('cw-main');
+    const sessionInfo = document.getElementById('cw-session-info');
     const sessionTools = document.getElementById('cw-session-tools');
     const sessionInput = document.getElementById('cw-session-input');
     const sessionList = document.getElementById('cw-session-list');
@@ -3879,7 +3763,7 @@
     const sessionEmpty = document.getElementById('cw-session-empty');
     const modeBtns = Array.from(root.querySelectorAll('[data-cw-mode]'));
     const sortBtns = Array.from(root.querySelectorAll('[data-cw-sort]'));
-    const bottomBar = root.children[root.children.length - 1]; // the playback control row
+    const bottomBar = document.getElementById('cw-playback-bar'); // the playback control row
 
     // Render legend once
     legendEl.innerHTML = LEGEND.map((x) => {
@@ -4730,12 +4614,18 @@
     });
 
     // ── Mode + session combobox wiring ──
-    const replayableSessions = listReplayableSessions();
+    const replayableSessions = listReplayableSessionsScoped();
 
     // Combobox state
     const ui = {
       search: '',       // current filter query
-      sort: 'recent'    // 'recent' | 'turns'
+      sort: 'recent',   // 'recent' | 'turns' | 'tokens'
+      // Set to true whenever the sort criterion actually changes. The next
+      // renderSessionList() consumes it, resets sessionList.scrollTop, and
+      // clears it back to false. Opening the list with the SAME sort leaves
+      // the scroll offset untouched so users can scroll, pick an item, and
+      // later re-open the list back at the same position.
+      _pendingScrollReset: false
     };
 
     function formatSessionOption(s) {
@@ -4812,6 +4702,13 @@
       if (replayableSessions.length === 0) return;
       renderSessionList();
       sessionList.style.display = 'block';
+      // Only reset scroll if the sort was changed since the last render.
+      // Otherwise preserve the user's scroll position so picking an item
+      // from the middle of the list doesn't lose their place.
+      if (ui._pendingScrollReset) {
+        sessionList.scrollTop = 0;
+        ui._pendingScrollReset = false;
+      }
     }
     function closeSessionList() { sessionList.style.display = 'none'; }
 
@@ -4825,8 +4722,39 @@
       }
     }
 
+    // Renders the metadata panel shown in place of the playback bar when a
+    // real session is loaded. Kept separate from the input label so the full
+    // prompt snippet stays visible even when the input clips it.
+    function renderSessionInfo() {
+      if (!sessionInfo) return;
+      if (state.mode !== 'session') { sessionInfo.style.display = 'none'; return; }
+      const cur = replayableSessions.find((s) => s.id === state.sessionId);
+      if (!cur) { sessionInfo.style.display = 'none'; sessionInfo.innerHTML = ''; return; }
+      const f = formatSessionOption(cur);
+      const chip = (label, value, mono) => {
+        if (!value) return '';
+        return '<div style="display:flex;align-items:baseline;gap:6px">'
+          +   '<span style="font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:var(--cw-text-faint);font-weight:600">' + escapeHtml(label) + '</span>'
+          +   '<span style="' + (mono ? 'font-family:var(--cw-font-mono);' : '') + 'font-size:12px;color:var(--cw-text-2);font-weight:600">' + escapeHtml(value) + '</span>'
+          + '</div>';
+      };
+      const parts = [];
+      // Prompt snippet takes the remaining width — clipped with ellipsis so
+      // long first-prompts do not push the meta chips off the row.
+      parts.push('<div style="flex:1;min-width:120px;display:flex;align-items:baseline;gap:6px;overflow:hidden">'
+        + '<span style="font-size:10px;text-transform:uppercase;letter-spacing:0.5px;color:var(--cw-text-faint);font-weight:600;flex-shrink:0">' + escapeHtml(t('cwe_infoPrompt')) + '</span>'
+        + '<span title="' + escapeHtml(f.snippet) + '" style="font-size:12px;color:var(--cw-text-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0">' + escapeHtml(f.snippet) + '</span>'
+        + '</div>');
+      parts.push(chip(t('cwe_infoDate'), f.dateStr, true));
+      parts.push(chip(t('cwe_infoTurns'), String(f.turns), true));
+      if (f.modelStr) parts.push(chip(t('cwe_infoModel'), f.modelStr, true));
+      if (f.peakStr)  parts.push(chip(t('cwe_infoPeak'), f.peakStr, true));
+      sessionInfo.innerHTML = parts.join('');
+      sessionInfo.style.display = 'flex';
+    }
+
     function selectSession(sessionId) {
-      const events = buildSessionEvents(sessionId);
+      const events = buildSessionEventsScoped(sessionId);
       state.sessionId = sessionId;
       state.sessionEvents = events;
       state.sessionLabelStash = null; // new selection — discard any stashed previous label
@@ -4842,6 +4770,7 @@
       state.hovIdx = null;
       state.playing = false;
       applySessionInputLabel();
+      renderSessionInfo();
       closeSessionList();
       update();
       // Persist selection in the URL so refresh keeps the user on this session.
@@ -4887,6 +4816,7 @@
         state.budget = MAX;
         sessionInput.value = '';
         ui.search = '';
+        renderSessionInfo();
         update();
         // Persist mode so refresh keeps the user on the session tab even without a pick.
         contextSubPath = 'session';
@@ -4897,6 +4827,7 @@
         mainEl.style.paddingBottom = '0';
         state.budget = MAX;
         closeSessionList();
+        renderSessionInfo();
         update();
         // Use 'example' (not '') so re-renders stay in example mode.
         // Empty path '' is reserved for "fresh navigation → default to session".
@@ -4955,6 +4886,7 @@
       }
     });
     updateSortStyling();
+    renderSessionInfo();
 
     modeBtns.forEach((b) => {
       b.addEventListener('click', () => setMode(b.getAttribute('data-cw-mode')));
@@ -5036,9 +4968,18 @@
         e.preventDefault();
       });
       b.addEventListener('click', () => {
-        ui.sort = b.getAttribute('data-cw-sort');
+        const next = b.getAttribute('data-cw-sort');
+        if (next === ui.sort) return; // no change, nothing to do
+        ui.sort = next;
         updateSortStyling();
-        if (sessionList.style.display !== 'none') renderSessionList();
+        if (sessionList.style.display !== 'none') {
+          // Layer is open → apply immediately and reset scroll now.
+          renderSessionList();
+          sessionList.scrollTop = 0;
+        } else {
+          // Layer is hidden → defer scroll reset until the next open.
+          ui._pendingScrollReset = true;
+        }
       });
     });
 
@@ -5408,21 +5349,15 @@
   }
 
   function renderSkillDetail(item) {
-    let usageCount = countUsage('skills', item.name, 0);
-    let lastUsed = getLastUsed('skills', item.name);
     let html = '<div class="detail-meta">';
-    html += metaCard('USAGE', fmtNum(usageCount) + ' ' + t('calls'));
-    html += metaCard('LAST USED', lastUsed ? relativeTime(lastUsed) : t('never'));
+    html += usageMetaCards('skills', item.name);
     if (item.version) html += metaCard('VERSION', item.version);
     if (item.plugin) html += metaCard('PLUGIN', item.plugin);
     const skillAuthor = getPluginAuthor(item.plugin);
     if (skillAuthor) html += metaCard('AUTHOR', skillAuthor);
     html += '</div>';
 
-    if (item.description) {
-      html += '<div class="section"><div class="section-title">' + t('description') + '</div>'
-        + '<div class="card" style="padding:16px;font-size:13px;color:var(--text-secondary)">' + escapeHtml(item.description) + '</div></div>';
-    }
+    html += descriptionBlock(item.description);
 
     if (item.argumentHint) {
       html += '<div class="section"><div class="section-title">' + t('argumentHint') + '</div>'
@@ -5437,47 +5372,26 @@
         + '</div></div></div>';
     }
 
-    if (item.filePath) {
-      html += '<div class="file-path"><span class="file-path-label">' + t('configPathLabel') + '</span> ' + escapeHtml(item.filePath) + '</div>';
-    }
-
-    if (item.body) {
-      html += '<div class="section"><div class="section-title">' + t('content') + '</div>'
-        + '<div class="content-preview">' + renderMarkdown(item.body) + '</div></div>';
-    }
-
+    html += filePathBlock(item.filePath);
+    html += markdownBodyBlock(item.body, 'content');
     return html;
   }
 
   function renderAgentDetail(item) {
-    let usageCount = countUsage('agents', item.name, 0);
-    let lastUsed = getLastUsed('agents', item.name);
     const model = item.model || '';
     const modelClass = model.includes('haiku') ? 'haiku' : model.includes('sonnet') ? 'sonnet' : model.includes('opus') ? 'opus' : 'default';
 
     let html = '<div class="detail-meta">';
-    html += metaCard('USAGE', fmtNum(usageCount) + ' ' + t('calls'));
-    html += metaCard('LAST USED', lastUsed ? relativeTime(lastUsed) : t('never'));
+    html += usageMetaCards('agents', item.name);
     if (model) html += '<div class="meta-card"><div class="meta-label">MODEL</div><div class="meta-value"><span class="badge badge-model-' + modelClass + '">' + escapeHtml(model) + '</span></div></div>';
     if (item.plugin) html += metaCard('PLUGIN', item.plugin);
     const agentAuthor = getPluginAuthor(item.plugin);
     if (agentAuthor) html += metaCard('AUTHOR', agentAuthor);
     html += '</div>';
 
-    if (item.description) {
-      html += '<div class="section"><div class="section-title">' + t('description') + '</div>'
-        + '<div class="card" style="padding:16px;font-size:13px;color:var(--text-secondary)">' + escapeHtml(item.description) + '</div></div>';
-    }
-
-    if (item.filePath) {
-      html += '<div class="file-path"><span class="file-path-label">' + t('configPathLabel') + '</span> ' + escapeHtml(item.filePath) + '</div>';
-    }
-
-    if (item.body) {
-      html += '<div class="section"><div class="section-title">' + t('content') + '</div>'
-        + '<div class="content-preview">' + renderMarkdown(item.body) + '</div></div>';
-    }
-
+    html += descriptionBlock(item.description);
+    html += filePathBlock(item.filePath);
+    html += markdownBodyBlock(item.body, 'content');
     return html;
   }
 
@@ -5493,9 +5407,7 @@
     if (item.lastUpdated) html += metaCard('UPDATED', formatDate(item.lastUpdated));
     html += '</div>';
 
-    if (item.installPath) {
-      html += '<div class="file-path"><span class="file-path-label">' + t('configPathLabel') + '</span> ' + escapeHtml(item.installPath) + '</div>';
-    }
+    html += filePathBlock(item.installPath);
 
     const pluginSkills = getItems('skills').filter((s) => { return s.plugin === item.name; });
     if (pluginSkills.length > 0) {
@@ -5553,29 +5465,15 @@
     if (item.scope) html += metaCard('SCOPE', item.scope);
     html += '</div>';
 
-    if (item.description) {
-      html += '<div class="section"><div class="section-title">' + t('description') + '</div>'
-        + '<div class="card" style="padding:16px;font-size:13px;color:var(--text-secondary)">' + escapeHtml(item.description) + '</div></div>';
-    }
-
-    if (item.filePath) {
-      html += '<div class="file-path"><span class="file-path-label">' + t('configPathLabel') + '</span> ' + escapeHtml(item.filePath) + '</div>';
-    }
-
-    if (item.body) {
-      html += '<div class="section"><div class="section-title">' + t('content') + '</div>'
-        + '<div class="content-preview">' + renderMarkdown(item.body) + '</div></div>';
-    }
-
+    html += descriptionBlock(item.description);
+    html += filePathBlock(item.filePath);
+    html += markdownBodyBlock(item.body, 'content');
     return html;
   }
 
   function renderMcpDetail(item) {
-    const usageCount = countUsage('mcpServers', item.name, 0);
-    const lastUsed = getLastUsed('mcpServers', item.name);
     let html = '<div class="detail-meta">';
-    html += metaCard('USAGE', fmtNum(usageCount) + ' ' + t('calls'));
-    html += metaCard('LAST USED', lastUsed ? relativeTime(lastUsed) : t('never'));
+    html += usageMetaCards('mcpServers', item.name);
     if (item.type) html += metaCard('TYPE', item.type);
     html += '</div>';
 
@@ -5599,18 +5497,14 @@
         + '<div class="content-preview"><pre><code class="lang-json">' + syntaxHighlightJson(item.rawJson, true) + '</code></pre></div></div>';
     }
 
-    if (item.sourcePath) {
-      html += '<div class="file-path"><span class="file-path-label">' + t('configPathLabel') + '</span> ' + escapeHtml(item.sourcePath) + '</div>';
-    }
-
+    html += filePathBlock(item.sourcePath);
     return html;
   }
 
-  function renderRuleDetail(item) {
-    let html = '';
-    if (item.filePath) {
-      html += '<div class="file-path"><span class="file-path-label">' + t('configPathLabel') + '</span> ' + escapeHtml(item.filePath) + '</div>';
-    }
+  // Shared body for "simple" detail pages — path header + markdown body or
+  // an empty-state hint. Used by rules, principles, and plans.
+  function renderSimpleBodyDetail(item) {
+    let html = filePathBlock(item.filePath);
     if (item.body) {
       html += '<div class="content-preview">' + renderMarkdown(item.body) + '</div>';
     } else {
@@ -5619,32 +5513,16 @@
     return html;
   }
 
-  function renderPrincipleDetail(item) {
-    let html = '';
-    if (item.filePath) {
-      html += '<div class="file-path"><span class="file-path-label">' + t('configPathLabel') + '</span> ' + escapeHtml(item.filePath) + '</div>';
-    }
-    if (item.body) {
-      html += '<div class="content-preview">' + renderMarkdown(item.body) + '</div>';
-    } else {
-      html += '<div class="empty-state"><div class="empty-text">' + t('noContent') + '</div></div>';
-    }
-    return html;
-  }
+  function renderRuleDetail(item) { return renderSimpleBodyDetail(item); }
+  function renderPrincipleDetail(item) { return renderSimpleBodyDetail(item); }
 
   function renderCommandDetail(item) {
-    let html = '';
-    if (item.description) {
-      html += '<div class="section"><div class="section-title">' + t('description') + '</div>'
-        + '<div class="card" style="padding:16px;font-size:13px;color:var(--text-secondary)">' + escapeHtml(item.description) + '</div></div>';
-    }
+    let html = descriptionBlock(item.description);
     if (item.allowedTools) {
       html += '<div class="section"><div class="section-title">' + t('allowedTools') + '</div>'
         + '<div class="card" style="padding:16px"><code>' + escapeHtml(item.allowedTools) + '</code></div></div>';
     }
-    if (item.filePath) {
-      html += '<div class="file-path"><span class="file-path-label">' + t('configPathLabel') + '</span> ' + escapeHtml(item.filePath) + '</div>';
-    }
+    html += filePathBlock(item.filePath);
     if (item.body) {
       html += '<div class="content-preview">' + renderMarkdown(item.body) + '</div>';
     }
@@ -5652,14 +5530,8 @@
   }
 
   function renderTeamDetail(item) {
-    let html = '';
-    if (item.filePath) {
-      html += '<div class="file-path"><span class="file-path-label">' + t('configPathLabel') + '</span> ' + escapeHtml(item.filePath) + '</div>';
-    }
-    if (item.description) {
-      html += '<div class="section"><div class="section-title">' + t('description') + '</div>'
-        + '<div class="card" style="padding:16px;font-size:13px;color:var(--text-secondary)">' + escapeHtml(item.description) + '</div></div>';
-    }
+    let html = filePathBlock(item.filePath);
+    html += descriptionBlock(item.description);
     html += '<div class="detail-meta">'
       + metaCard(t('labelMembers'), item.members || 0)
       + (item.leadAgentId ? metaCard('Lead', item.leadAgentId) : '')
@@ -5703,29 +5575,15 @@
     return html;
   }
 
-  function renderPlanDetail(item) {
-    let html = '';
-    if (item.filePath) {
-      html += '<div class="file-path"><span class="file-path-label">' + t('configPathLabel') + '</span> ' + escapeHtml(item.filePath) + '</div>';
-    }
-    if (item.body) {
-      html += '<div class="content-preview">' + renderMarkdown(item.body) + '</div>';
-    } else {
-      html += '<div class="empty-state"><div class="empty-text">' + t('noContent') + '</div></div>';
-    }
-    return html;
-  }
+  function renderPlanDetail(item) { return renderSimpleBodyDetail(item); }
 
   function renderTodoDetail(item) {
-    let html = '';
-    html += '<div class="detail-meta">'
+    let html = '<div class="detail-meta">'
       + metaCard(t('labelTotal'), item.total || 0)
       + metaCard(t('labelPending'), item.pending || 0)
       + metaCard(t('labelCompleted'), item.completed || 0)
       + '</div>';
-    if (item.filePath) {
-      html += '<div class="file-path"><span class="file-path-label">' + t('configPathLabel') + '</span> ' + escapeHtml(item.filePath) + '</div>';
-    }
+    html += filePathBlock(item.filePath);
     return html;
   }
 
@@ -5734,6 +5592,38 @@
       + '<div class="meta-label">' + label + '</div>'
       + '<div class="meta-value">' + escapeHtml(String(value)) + '</div>'
       + '</div>';
+  }
+
+  // ── Detail-page helpers ──
+  // These extract the repeated blocks used by renderSkillDetail,
+  // renderAgentDetail, renderMemoryDetail, etc. Each helper renders nothing
+  // (empty string) when the field is missing, so callers can chain them
+  // unconditionally and keep each detail renderer focused on its unique bits.
+
+  function filePathBlock(filePath) {
+    if (!filePath) return '';
+    return '<div class="file-path"><span class="file-path-label">' + t('configPathLabel') + '</span> ' + escapeHtml(filePath) + '</div>';
+  }
+
+  function descriptionBlock(text) {
+    if (!text) return '';
+    return '<div class="section"><div class="section-title">' + t('description') + '</div>'
+      + '<div class="card" style="padding:16px;font-size:13px;color:var(--text-secondary)">' + escapeHtml(text) + '</div></div>';
+  }
+
+  function markdownBodyBlock(body, titleKey) {
+    if (!body) return '';
+    const title = titleKey ? ('<div class="section-title">' + t(titleKey) + '</div>') : '';
+    const wrapOpen = titleKey ? '<div class="section">' + title : '';
+    const wrapClose = titleKey ? '</div>' : '';
+    return wrapOpen + '<div class="content-preview">' + renderMarkdown(body) + '</div>' + wrapClose;
+  }
+
+  function usageMetaCards(category, name) {
+    const usageCount = countUsage(category, name, 0);
+    const lastUsed = getLastUsed(category, name);
+    return metaCard('USAGE', fmtNum(usageCount) + ' ' + t('calls'))
+      + metaCard('LAST USED', lastUsed ? relativeTime(lastUsed) : t('never'));
   }
 
   // ── Content action binding ──

@@ -35,6 +35,8 @@ Type to filter sidebar items by name. Matches are highlighted across all categor
 
 Below the main navigation, each harness component category is listed with an item count badge. Click to expand and see individual items; click an item to view its detail page.
 
+Categories with more than 50 items show only the first 50 when expanded, followed by a "+N more" button — click it to reveal the rest. Search bypasses the cap entirely since results are already narrowed.
+
 ---
 
 ## Main Pages
@@ -153,11 +155,13 @@ Interactive simulator that shows what fills the Claude Code context window durin
 
 **Highlights in Real Session mode**:
 
+- **Session metadata panel** — when a session is selected, a dedicated row under the timeline shows the full first-prompt snippet, date, turn count, model, and peak context. Long prompts that get clipped in the search input stay fully visible here.
 - **Dynamic context budget** — the header automatically switches between `200K` and `1M` depending on the peak cumulative input tokens seen in the session (1M-context model variants like `claude-opus-4-6[1m]` trigger the larger budget).
 - **Peak-based total** — the header shows the maximum context size reached, not the final entry; this stays meaningful after mid-session `/compact` events.
 - **Category legend with hover tooltips** showing each category's percentage share and token count.
 - **Detailed per-turn panel** with model, timestamp, cumulative context size, delta, and cache hit ratio.
 - **URL persistence** — `#context/{sessionId}` lets you bookmark or refresh without losing state. Changing the sidebar period, scope, or language keeps the selected session.
+- **Smart session list scroll** — when the search layer is open, the scroll position is preserved across list close/reopen with the same sort. Only changing the sort criterion resets the list to the top.
 
 Navigation: click 🪟 `Context Explorer` in the sidebar, or use the deep link `#context` (example mode), `#context/session` (session mode, no selection), or `#context/{sessionId}` (session mode, specific session).
 

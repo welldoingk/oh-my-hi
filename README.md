@@ -1,7 +1,7 @@
 # 👋 oh-my-hi (Oh My Harness Insights)
 ![oh-my-hi dashboard](https://img.shields.io/badge/Claude_Code-Plugin-blue)
 
-**Harness Insights** — A visual dashboard for your Claude Code harness.
+> **Oh, so that's what Claude's been doing!** — A visual dashboard for your Claude Code harness.
 
 Parses your entire Claude Code configuration and usage data, then generates an interactive single-file HTML dashboard you can open locally.
 
@@ -11,12 +11,23 @@ Parses your entire Claude Code configuration and usage data, then generates an i
 
 - **Harness overview** — skills, agents, plugins, hooks, memory, MCP servers, rules, principles, commands, teams, plans
 - **Token analytics** — usage by model, daily trends, cache efficiency, prompt statistics, response latency
+- **Context Window Explorer** — replay any past session turn-by-turn to see exactly how the context window filled up
 - **Activity heatmaps** — daily usage patterns across skills, agents, and commands
 - **Task categories** — auto-classified token usage by work type (code editing, docs, planning, etc.)
 - **Multi-workspace** — switch between global and per-project scopes
 
 <img src="./assets/token-overview.png" alt="Tokens" width="800">
 <img src="./assets/insights.png" alt="Insights" width="800">
+
+### Context Window Explorer
+
+Pick a real session from your Claude Code history and replay it turn-by-turn. The explorer breaks down every API turn into its contribution to the context window — system prompt, CLAUDE.md, memory, skill descriptions, MCP tools, user prompts, model responses, tool calls — so you can see exactly where your tokens went and when `/compact` kicked in.
+
+<img src="./assets/context-explorer.png" alt="Context Window Explorer" width="800">
+
+You can also view a guided example session to walk through the mechanics before loading your own:
+
+<img src="./assets/session-replay.gif" alt="Context Window Explorer example replay" width="800">
 
 ## Installation
 

@@ -95,16 +95,20 @@ body {
   font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
 }
 
+.sidebar-logo-tagline {
+  font-size: 11px;
+  color: var(--text-secondary);
+  letter-spacing: 0.2px;
+  line-height: 1.35;
+  font-style: italic;
+  /* Give the catchphrase its own row so it can stretch across the sidebar
+     without competing with the version badge + language toggle. */
+}
+
 .sidebar-logo-sub {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-.sidebar-logo-subtitle {
-  font-size: 11px;
-  color: var(--text-secondary);
-  letter-spacing: 0.3px;
 }
 
 .sidebar-logo-sub .lang-toggle-group {
@@ -415,6 +419,15 @@ body.dark .sidebar-period-range {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.nav-child-more {
+  font-style: italic;
+  opacity: 0.72;
+}
+
+.nav-child-more:hover {
+  opacity: 1;
 }
 
 .nav-child .dot {

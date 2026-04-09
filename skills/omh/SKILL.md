@@ -6,6 +6,8 @@ argument-hint: "[--data-only] [--enable-auto] [--disable-auto] [--status] [--upd
 
 # oh-my-hi
 
+> **Oh, so that's what Claude's been doing!**
+
 Generates a full harness insights dashboard and opens it in the browser.
 
 ## Usage

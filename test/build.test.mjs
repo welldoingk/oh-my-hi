@@ -158,6 +158,32 @@ describe('Build', () => {
       assert.ok(script.includes("'app.js'"), 'app.js in template file list');
       assert.ok(script.includes("'styles.css'"), 'styles.css in template file list');
       assert.ok(script.includes("'dashboard.html'"), 'dashboard.html in template file list');
+      assert.ok(script.includes("'session-events.mjs'"), 'session-events.mjs in template file list');
+    });
+  });
+
+  describe('dev vs plugin build mode', () => {
+    const scriptPath = path.join(ROOT, 'scripts', 'generate-dashboard.mjs');
+    let script;
+    before(() => { script = fs.readFileSync(scriptPath, 'utf-8'); });
+
+    it('detects dev build from .git + package.json name', () => {
+      assert.ok(script.includes('IS_DEV_BUILD'), 'dev mode flag defined');
+      assert.ok(script.includes("'.git'"), 'checks .git directory');
+      assert.ok(script.includes("'oh-my-hi'"), 'checks package.json name');
+    });
+
+    it('forces HTML rebuild when IS_DEV_BUILD is true', () => {
+      // needsHtmlRebuild must short-circuit to true in dev mode so template
+      // edits always reflect in the output without mtime bookkeeping.
+      assert.ok(
+        /if\s*\(\s*IS_DEV_BUILD\s*\)\s*return\s+true/.test(script),
+        'dev mode bypasses mtime shortcut'
+      );
+    });
+
+    it('prints a [dev] marker in console output when running from source', () => {
+      assert.ok(script.includes("[dev]"), 'dev marker string present');
     });
   });
 });

@@ -79,6 +79,21 @@ Execute in order when a version bump is requested:
 - Charts: `bb.generate({ bindto, data, ... })` via billboard.js API
 - State persistence via localStorage: `harness-theme`, `harness-lang`, `harness-period`, `harness-budget`, `harness-compare`
 
+### Number Formatting (principle)
+
+Every number shown to the user goes through **`fmtCompact(n)`** in `templates/app.js`. It enforces:
+
+1. **Intl.NumberFormat** for values with `|n| < 10,000` — locale-aware thousands separator based on `numLocale`
+2. **SI prefix** for `|n| ≥ 10,000` — `K` (1e3), `M` (1e6), `B` (1e9). Trailing `.0` stripped (`12K`, not `12.0K`)
+3. **Sign preserved** for negative values
+
+Do **not** reinvent formatters with ad-hoc `toFixed` / `toLocaleString`. Exceptions:
+- `fmtCost(n)` for currency (`$` prefix, fixed decimal rules)
+- `fmtNum(n)` for raw Intl.NumberFormat output with no SI conversion (IDs, versions, small counts where K would be misleading)
+- Duration formatters (`fmtDur`, `fmtMs`) which convert ms → s/min/h
+
+When adding new number displays, reach for `fmtCompact` first. If you need different behavior, extend `fmtCompact` rather than adding a local formatter.
+
 ## Skill Spec Compliance
 
 SKILL.md follows the [Agent Skills Specification](https://agentskills.io/specification):

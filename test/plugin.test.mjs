@@ -95,8 +95,11 @@ describe('Plugin — Marketplace & Installation', () => {
 });
 
 describe('Plugin — Parameter Behavior', () => {
+  // Plugin mode override: these tests assert end-user CLI flag behavior,
+  // which should match what `/omh` produces, not the dev-build path.
   const run = (args) => execSync(`node scripts/generate-dashboard.mjs ${args}`, {
     cwd: ROOT, encoding: 'utf-8', timeout: 30000,
+    env: { ...process.env, OMH_BUILD_MODE: 'plugin' },
   });
 
   it('--help should print usage and exit', () => {

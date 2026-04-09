@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.6.0] - 2026-04-09
+
+### Added
+- **Tagline** — "Oh, so that's what Claude's been doing!" / "아, 이래서 Claude가 그랬구나!" shown under the sidebar logo, applied across `package.json`, `marketplace.json`, `README.md`, and `SKILL.md`.
+- **Context Explorer: session metadata panel** — the full prompt snippet, date, turn count, model, and peak context are now rendered in a dedicated row beneath the timeline so long prompts are no longer clipped in the search input.
+- **Sidebar: progressive rendering for large categories** — categories with more than 50 items render only the first 50 with a "+N more" footer to keep initial DOM cost bounded on harnesses with hundreds of skills/agents. Search bypasses the cap since results are already narrowed.
+- **Parser test suite** (`test/parser.test.mjs`) — 24 unit tests covering `frontmatter`, `skills`, `agents`, `hooks`, `mcp-servers`, and `memory` parsers, including a security assertion that MCP env values are masked (never exposed in `rawJson`).
+- **`templates/session-events.mjs` module** — `mapSessionCtx`, `listReplayableSessions`, and `buildSessionEvents` extracted as pure functions with 18 unit tests (`test/session-events.test.mjs`). Source of truth for Context Explorer session logic.
+- **`templates/context-example.mjs` module** — `EXAMPLE_EVENTS`, `EXAMPLE_GATES`, and `KIND_META` constants extracted from the Context Explorer renderer.
+- **Number formatting principle** documented in `CLAUDE.md` → Code Conventions → Number Formatting. `fmtCompact()` is now the canonical formatter: `Intl.NumberFormat` for `|n| < 10,000`, SI prefix (K/M/B) above. Sign preserved, trailing `.0` stripped, non-numeric guarded. Context Explorer's local `fmt()` now delegates to it, so session numbers are locale-aware.
+- **Dev vs plugin build mode** — `IS_DEV_BUILD` auto-detects source checkouts (`.git` + `package.json.name === 'oh-my-hi'`) and forces full HTML rebuild every run. `OMH_BUILD_MODE=dev|plugin` env var provides an explicit override for tests.
+- **Number format unit tests** (`test/number-format.test.mjs`) — 9 tests verifying `fmtCompact` / `fmtNum` behavior by extracting and evaluating the functions from `app.js`.
+- **TOC header in `templates/app.js`** — a section index at the top of the file lists all 37 `// ── X ──` markers with one-line descriptions for quick navigation.
+- **`README.md` Context Window Explorer section** — new feature entry + screenshot + example GIF showing a guided session replay.
+
+### Changed
+- **Sidebar logo layout** — the tagline now lives on its own row above the version badge + language toggle, so the longer catchphrase has room to breathe.
+- **Theme toggle** only calls `renderContent()` for views that compute theme-dependent values in JS (`overview`, `context`, `structure`). All other pages theme via CSS alone, making the toggle instantaneous on token/category/detail pages.
+- **Detail renderer dedup** — extracted `filePathBlock`, `descriptionBlock`, `markdownBodyBlock`, `usageMetaCards`, and `renderSimpleBodyDetail` helpers. `renderRuleDetail` / `renderPrincipleDetail` / `renderPlanDetail` now share a single implementation.
+- **`bottomBar` reference** — Context Explorer's playback row now uses an explicit `#cw-playback-bar` id instead of `root.children[last]` indexing, fixing a bug where adding sibling elements after the row silently broke show/hide logic.
+- **Korean translations completed** for `flowUserPrompt`, `flowRulesPrinciples`, `flowHooks`, `flowSkillsAgents`, `flowMcpServers`, `cwe_kindAuto`, `cwe_kindHook`.
+- **`_devBuild` flag in data.json** now sources from `IS_DEV_BUILD` instead of a duplicate `scriptDir` check.
+- **Build script** inlines `.mjs` helper modules via a generic `INLINED_MODULES` list (`session-events.mjs`, `context-example.mjs`), making future extractions a one-line change.
+
+### Fixed
+- **Session search list scroll reset** now follows a precise contract: scroll resets to top **only** when the sort criterion actually changes. Selecting an item and reopening the list with the same sort preserves the user's scroll position. Changing sort while the layer is hidden defers the reset via a `_pendingScrollReset` flag consumed on the next open.
+- **Sort button on focused input** — `mousedown` preventDefault stops the session input from losing focus when the user clicks a sort button.
+- **`v0.0.0` leaking into `index.html`** — `cache.test.mjs` version-mismatch test now wraps its tamper in `try/finally` to always restore the original HTML.
+- **DEV BUILD badge disappearing after test run** — `cache.test.mjs` now snapshots `data.json` / `data.js` / `index.html` before the suite and restores them in the `after` hook, so plugin-mode test runs don't leak `_devBuild: undefined` into the developer's live dashboard.
+
+### Removed
+- Unused `isDevBuild` locally-scoped flag in `scripts/generate-dashboard.mjs` (replaced by module-level `IS_DEV_BUILD`).
+
 ## [0.5.1] - 2026-04-09
 
 ### Added

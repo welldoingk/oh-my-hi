@@ -1,4 +1,4 @@
-import { describe, it, before } from 'node:test';
+import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execSync } from 'child_process';
 import fs from 'fs';
@@ -16,6 +16,25 @@ const PENDING_DIR = path.join(OUTPUT, 'pending');
 const CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR
   || path.join(process.env.HOME, '.claude');
 
+// Snapshot + restore the user-facing output files.
+// Some tests in this file force OMH_BUILD_MODE=plugin and run full builds,
+// which overwrite data.json / data.js / index.html with plugin-mode artifacts
+// (e.g. _devBuild:undefined, DEV BUILD badge gone). That leaks into the
+// developer's live dashboard. Snapshot before the suite, restore after.
+const SNAPSHOT_FILES = ['data.json', 'data.js', 'index.html'];
+const snapshots = new Map();
+before(() => {
+  for (const f of SNAPSHOT_FILES) {
+    const p = path.join(OUTPUT, f);
+    if (fs.existsSync(p)) snapshots.set(f, fs.readFileSync(p));
+  }
+});
+after(() => {
+  for (const [f, buf] of snapshots) {
+    fs.writeFileSync(path.join(OUTPUT, f), buf);
+  }
+});
+
 function cleanCache() {
   try { fs.unlinkSync(CACHE_PATH); } catch {}
   try { fs.rmSync(CACHE_DIR, { recursive: true }); } catch {}
@@ -23,8 +42,11 @@ function cleanCache() {
 }
 
 function run(args = '') {
+  // Force plugin mode: these tests verify mtime short-circuit / lightweight
+  // rebuild behavior, which dev mode intentionally bypasses.
   return execSync(`node scripts/generate-dashboard.mjs ${args}`, {
     cwd: ROOT, encoding: 'utf-8', timeout: 30000,
+    env: { ...process.env, OMH_BUILD_MODE: 'plugin' },
   });
 }
 
@@ -233,15 +255,21 @@ describe('Upgrade Compatibility', () => {
   });
 
   it('should rebuild index.html on version mismatch (upgrade)', () => {
-    // Tamper version in index.html to simulate old version
+    // Tamper version in index.html to simulate old version. Save the original
+    // first so we can always restore it — otherwise a mid-test failure can
+    // leave the dashboard file stuck on v0.0.0 for manual inspection.
     const indexPath = path.join(OUTPUT, 'index.html');
     const html = fs.readFileSync(indexPath, 'utf-8');
     fs.writeFileSync(indexPath, html.replace(/v\d+\.\d+\.\d+/, 'v0.0.0'), 'utf-8');
-
-    run('--data-only');
-    const newHtml = fs.readFileSync(indexPath, 'utf-8');
-    const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf-8'));
-    assert.ok(newHtml.includes(pkg.version), 'index.html should have current version after rebuild');
+    try {
+      run('--data-only');
+      const newHtml = fs.readFileSync(indexPath, 'utf-8');
+      const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf-8'));
+      assert.ok(newHtml.includes(pkg.version), 'index.html should have current version after rebuild');
+    } finally {
+      // Always restore the original good HTML whether the test passed or failed.
+      fs.writeFileSync(indexPath, html, 'utf-8');
+    }
   });
 
   it('should handle missing cache dir gracefully on --data-only', () => {

@@ -181,6 +181,66 @@ describe('Web UI — Templates', () => {
       assert.ok(sessionIdx < exampleIdx, 'session tab comes before example tab');
     });
 
+    it('should skip renderContent on theme toggle for CSS-only views', () => {
+      // Theme toggle is cheap on pages where theming flows through CSS vars
+      // alone — no point re-running render*() + bb.generate. Only overview /
+      // context / structure compute colors in JS and still need a rebuild.
+      assert.ok(js.includes('THEME_REBUILD_VIEWS'), 'theme rebuild allowlist exists');
+      assert.ok(js.includes('overview: 1') || js.includes("overview:1"), 'overview listed');
+      assert.ok(js.includes('context: 1') || js.includes("context:1"), 'context listed');
+      assert.ok(js.includes('structure: 1') || js.includes("structure:1"), 'structure listed');
+      // Theme button handler still calls setBbDarkTheme unconditionally so the
+      // CSS swap happens even when the rebuild is skipped.
+      const themeHandlerIdx = js.indexOf('setBbDarkTheme(isDark)');
+      assert.ok(themeHandlerIdx !== -1, 'setBbDarkTheme call present');
+    });
+
+    it('should cap large sidebar categories with a show-all footer', () => {
+      // Categories with more than SIDEBAR_ITEM_LIMIT items get truncated on
+      // first render, with a clickable footer to reveal the rest. Keeps
+      // initial DOM cost manageable on harnesses with 500+ skills/agents.
+      assert.ok(js.includes('SIDEBAR_ITEM_LIMIT'), 'limit constant defined');
+      assert.ok(js.includes('sidebarShowAll'), 'show-all set tracks revealed categories');
+      assert.ok(js.includes("data-action=\"show-all\""), 'show-all action button rendered');
+      assert.ok(js.includes("action === 'show-all'"), 'show-all click handler wired up');
+      assert.ok(js.includes("t('sidebarShowMore')"), 'show-more label localized');
+    });
+
+    it('should render session metadata side panel in Context Explorer', () => {
+      // Long first-prompts get clipped in the input. A dedicated panel shows
+      // the full prompt snippet, date, turns, model, and peak context so
+      // users can verify which session they picked without resizing.
+      assert.ok(js.includes('id="cw-session-info"'), 'session info container exists');
+      assert.ok(js.includes('function renderSessionInfo'), 'renderSessionInfo defined');
+      assert.ok(js.includes("t('cwe_infoPrompt')"), 'prompt label localized');
+      assert.ok(js.includes("t('cwe_infoDate')"), 'date label localized');
+      assert.ok(js.includes("t('cwe_infoTurns')"), 'turns label localized');
+      assert.ok(js.includes("t('cwe_infoModel')"), 'model label localized');
+      assert.ok(js.includes("t('cwe_infoPeak')"), 'peak label localized');
+      // The panel must be refreshed on selection and mode changes.
+      assert.ok(js.includes('renderSessionInfo()'), 'renderSessionInfo invoked');
+    });
+
+    it('should only reset session list scroll when sort actually changes', () => {
+      // Contract: scroll resets to top ONLY when the sort criterion changes.
+      // Re-opening with the same sort after picking an item must preserve
+      // the user's scroll offset. The pending flag carries a deferred reset
+      // across close → reopen when sort was changed while hidden.
+      assert.ok(js.includes('_pendingScrollReset'), 'pending flag defined on ui state');
+
+      // Sort click path: diff against current sort before applying.
+      assert.ok(js.includes('next === ui.sort'), 'early-returns when sort unchanged');
+      assert.ok(js.includes('_pendingScrollReset = true'),
+        'defers reset when layer hidden');
+
+      // openSessionList path: consume pending flag only, no unconditional reset.
+      const openIdx = js.indexOf('function openSessionList');
+      assert.ok(openIdx !== -1, 'openSessionList defined');
+      const openSnippet = js.slice(openIdx, openIdx + 500);
+      assert.ok(openSnippet.includes('ui._pendingScrollReset'),
+        'openSessionList consults pending flag');
+    });
+
     it('should have three-state eye icons for terminal visibility', () => {
       assert.ok(js.includes("evt.vis === 'hidden'"), 'hidden state check');
       assert.ok(js.includes("evt.vis === 'brief'"), 'brief state check');
@@ -307,6 +367,8 @@ describe('Web UI — Templates', () => {
         'cwe_visBrief', 'cwe_visBriefSub',
         'cwe_visFull', 'cwe_visFullSub',
         'cwe_modeSession', 'cwe_modeExample',
+        'cwe_infoPrompt', 'cwe_infoDate', 'cwe_infoTurns', 'cwe_infoModel', 'cwe_infoPeak',
+        'sidebarShowMore', 'sidebarShowAll',
       ];
       for (const key of requiredKeys) {
         assert.ok(en[key], `missing en key: ${key}`);

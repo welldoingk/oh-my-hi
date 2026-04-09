@@ -36,6 +36,30 @@ const ROOT = path.resolve(__dirname, '..');
 const TEMPLATES = path.join(ROOT, 'templates');
 const OUTPUT = path.join(ROOT, 'output');
 
+// Dev vs plugin build detection.
+// Dev build:     script is running from the source git checkout (the folder
+//                with .git and package.json name === "oh-my-hi"). Always
+//                rebuilds HTML from templates (skips mtime short-circuit),
+//                and prints a [dev] marker so you can tell which mode is
+//                active. Used when editing templates locally.
+// Plugin build:  script is running from ~/.claude/plugins/cache/... — the
+//                current optimized path that reuses cached HTML when the
+//                templates haven't changed.
+// Detection: check the script's own repo root, not process.cwd(), so
+// invoking the binary from any directory still picks the right mode.
+const IS_DEV_BUILD = (() => {
+  // Explicit override for tests and special-case runs that want to exercise
+  // the plugin-mode code path even when the script happens to live in the
+  // source checkout.
+  if (process.env.OMH_BUILD_MODE === 'plugin') return false;
+  if (process.env.OMH_BUILD_MODE === 'dev') return true;
+  try {
+    if (!fs.existsSync(path.join(ROOT, '.git'))) return false;
+    const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf-8'));
+    return pkg.name === 'oh-my-hi';
+  } catch { return false; }
+})();
+
 const CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR
   || path.join(process.env.HOME, '.claude');
 
@@ -255,6 +279,7 @@ async function main() {
   // Parse changed files, update data.js for browser, save pending for cache.
   if (dataOnly) {
     if (!needsMigration && !needsVersionUpdate) {
+      if (IS_DEV_BUILD) console.log('oh-my-hi: [dev] running from source checkout');
       console.log('oh-my-hi: collecting data (lightweight)...');
     }
 
@@ -354,6 +379,7 @@ async function main() {
     openOrRefreshBrowser(indexPath);
   } else {
     // Normal mode: load cache + merge pending + full data
+    if (IS_DEV_BUILD) console.log('oh-my-hi: [dev] running from source checkout — forcing full rebuild');
     console.log('oh-my-hi: collecting data...');
     console.log(`  [1/3] scanning ${scopes.length} workspace(s)...`);
     const scopeData = await collectAllScopes(scopes, { days: 0, cachePath: CACHE_PATH, progress: true });
@@ -566,9 +592,6 @@ function buildDataObject(scopes, scopeData, systemLocale, extra = {}) {
     }
   }
   const taskCategories = buildTaskCategories(cleanScopeData);
-  // 스크립트가 ~/.claude 하위(플러그인)에서 실행되면 배포본, 그 외는 dev
-  const scriptDir = path.dirname(fileURLToPath(import.meta.url));
-  const isDevBuild = !scriptDir.startsWith(CLAUDE_CONFIG_DIR);
   return {
     scopes,
     scopeData: cleanScopeData,
@@ -576,7 +599,9 @@ function buildDataObject(scopes, scopeData, systemLocale, extra = {}) {
     generatedAt: new Date().toISOString(),
     configDir: CLAUDE_CONFIG_DIR,
     systemLocale,
-    _devBuild: isDevBuild || undefined,
+    // Uses the canonical IS_DEV_BUILD flag defined at the top of the file
+    // (checks .git + package.json name, honors OMH_BUILD_MODE override).
+    _devBuild: IS_DEV_BUILD || undefined,
     ...extra,
   };
 }
@@ -669,7 +694,17 @@ function writeHtml(indexPath, systemLocale) {
   const template = fs.readFileSync(path.join(TEMPLATES, 'dashboard.html'), 'utf-8');
   const rawStyles = fs.readFileSync(path.join(TEMPLATES, 'styles.css'), 'utf-8');
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf-8'));
-  const rawAppJs = fs.readFileSync(path.join(TEMPLATES, 'app.js'), 'utf-8')
+  // Pure helper modules that live alongside app.js but are authored as ESM
+  // so they can be unit-tested. Strip the `export ` keywords and prepend the
+  // code before app.js so the symbols land in the same script scope. Source
+  // of truth is the .mjs file — never edit the inlined copy.
+  const stripExports = (src) => src.replace(/^export\s+/gm, '');
+  const INLINED_MODULES = [
+    'session-events.mjs',
+    'context-example.mjs',
+  ].map(f => stripExports(fs.readFileSync(path.join(TEMPLATES, f), 'utf-8'))).join('\n');
+
+  const rawAppJs = (INLINED_MODULES + '\n' + fs.readFileSync(path.join(TEMPLATES, 'app.js'), 'utf-8'))
     .replace(/__VERSION__/g, JSON.stringify(pkg.version));
 
   const bbDir = path.join(ROOT, 'node_modules', 'billboard.js', 'dist');
@@ -705,6 +740,9 @@ function writeHtml(indexPath, systemLocale) {
  * Check if index.html needs rebuild (missing, version mismatch, or template newer than output).
  */
 function needsHtmlRebuild(indexPath) {
+  // Dev builds always rebuild from templates — mtime shortcuts have caused
+  // stale HTML during active template editing, and the extra cost is small.
+  if (IS_DEV_BUILD) return true;
   if (!fs.existsSync(indexPath)) return true;
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf-8'));
@@ -712,7 +750,7 @@ function needsHtmlRebuild(indexPath) {
     if (!html.includes(pkg.version)) return true;
     // Rebuild if any template file is newer than the output
     const outMtime = fs.statSync(indexPath).mtimeMs;
-    const templateFiles = ['app.js', 'styles.css', 'dashboard.html'].map(f => path.join(TEMPLATES, f));
+    const templateFiles = ['app.js', 'styles.css', 'dashboard.html', 'session-events.mjs', 'context-example.mjs'].map(f => path.join(TEMPLATES, f));
     return templateFiles.some(f => fs.existsSync(f) && fs.statSync(f).mtimeMs > outMtime);
   } catch { return true; }
 }

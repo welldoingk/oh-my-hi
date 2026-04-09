@@ -32,7 +32,9 @@ oh-my-hi/
 ├── templates/
 │   ├── dashboard.html           # HTML shell with placeholders
 │   ├── styles.css               # All CSS
-│   ├── app.js                   # Frontend JS (ES6+)
+│   ├── app.js                   # Frontend JS (ES6+) — see TOC at top of file
+│   ├── session-events.mjs       # Pure Context Explorer session helpers (testable)
+│   ├── context-example.mjs      # EXAMPLE_EVENTS, EXAMPLE_GATES, KIND_META constants
 │   ├── work-types.json          # Task category schema (25 types)
 │   └── locales/
 │       ├── en.json              # English locale (base)
@@ -75,6 +77,7 @@ Full mode (/omh):
   6. Generate data.json + data.js (minified for browser)
   7. Generate index.html (only on version change or first run):
      - dashboard.html template + __STYLES__ + __APP_JS__ + __LOCALE_DATA__ + billboard.js
+     - __APP_JS__ = inlined .mjs modules (session-events, context-example) + app.js
      - Data loaded via <script src="data.js"> (not inlined)
   8. Open/refresh browser + async update check (24h cache)
 
@@ -85,6 +88,20 @@ Lightweight mode (--data-only, Stop hook):
   4. Update data.js by merging into existing data.json
   5. Rebuild index.html only if missing or version changed
 ```
+
+### Dev vs Plugin Build Mode
+
+`scripts/generate-dashboard.mjs` detects whether it's running from a source
+checkout or from the plugin cache:
+
+- **Dev build** — script's ROOT has `.git` and `package.json.name === 'oh-my-hi'`.
+  `needsHtmlRebuild()` always returns true (template edits reflect immediately),
+  and `[dev]` is printed to the console.
+- **Plugin build** — default for `/omh` runs from `~/.claude/plugins/cache/...`.
+  Uses the optimized mtime shortcut for HTML reuse.
+
+Tests force plugin mode with `OMH_BUILD_MODE=plugin` in the subprocess env
+where they need to exercise the optimized path.
 
 ## Data Sources (13 parsers)
 
