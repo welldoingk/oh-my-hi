@@ -576,6 +576,15 @@ async function parseTranscriptFile(jsonlPath, cutoffMs) {
             });
           }
         }
+        // Detect slash-command skill invocations from <command-name> tags in user messages
+        const cmdMatch = fullText.match(/<command-name>\/?([^<]+)<\/command-name>/);
+        if (cmdMatch) {
+          const cmdName = cmdMatch[1].replace(/^\/+/, '').trim();
+          // Exclude built-in CLI commands that are not user-defined skills
+          if (cmdName && !/^(exit|help|clear|doctor|reload-plugins?|plugin|cost|stats|statusline|fast|compact|config|init|permissions|review|login|logout|memory|mcp|model|terminal-setup|vim|bug)$/i.test(cmdName)) {
+            skills.push({ name: cmdName, timestamp: tsMs || entry.timestamp, sessionId: entry.sessionId ?? null });
+          }
+        }
         // Skip tool-result and system-reminder pseudo-prompts so the preview is a real user message.
         const isToolResult = /^<(tool_use_result|command-stdout|command-stderr|system-reminder|local-command-stdout)/i.test(fullText.trimStart());
         if (charLen > 0 && !isToolResult) {
@@ -612,13 +621,21 @@ async function parseTranscriptFile(jsonlPath, cutoffMs) {
         for (const item of content) {
           if (item?.type !== 'tool_use') continue;
           if (item.name === 'Skill') {
-            const skillName = item.input?.skill;
-            if (skillName) {
+            const rawSkill = item.input?.skill;
+            if (rawSkill) {
+              // Normalize colon-separated plugin:skill to hyphen if it matches a registered skill
+              // e.g. "hipocampus:compaction" → "hipocampus-compaction" when that name is registered
+              const skillName = rawSkill;
               sessionContext[sid] = { type: 'skill', name: skillName };
               skills.push({ name: skillName, timestamp: tsMs || entry.timestamp, sessionId: entry.sessionId ?? null });
             }
           } else if (item.name === 'Agent') {
-            const agentName = item.input?.subagent_type ?? item.input?.description ?? 'unknown';
+            // Resolve agent name: built-in types use subagent_type directly,
+            // custom agents prefer the explicit name parameter for catalog matching
+            const builtinTypes = new Set(['general-purpose', 'Explore', 'Plan', 'claude-code-guide', 'statusline-setup', 'codex:codex-rescue']);
+            const rawType = item.input?.subagent_type;
+            const isBuiltin = rawType && builtinTypes.has(rawType);
+            const agentName = isBuiltin ? rawType : (item.input?.name || rawType || item.input?.description || 'unknown');
             sessionContext[sid] = { type: 'agent', name: agentName };
             agents.push({ name: agentName, timestamp: tsMs || entry.timestamp, sessionId: entry.sessionId ?? null });
           } else if (item.name.startsWith('mcp__')) {
@@ -680,8 +697,27 @@ async function parseTranscripts(configDir, cutoffMs, cache = {}) {
     try { files = fs.readdirSync(projPath, { withFileTypes: true }); } catch { continue; }
 
     for (const file of files) {
-      if (!file.isFile() || !file.name.endsWith('.jsonl')) continue;
-      filePaths.push(path.join(projPath, file.name));
+      if (file.isFile() && file.name.endsWith('.jsonl')) {
+        filePaths.push(path.join(projPath, file.name));
+      } else if (file.isDirectory()) {
+        // Scan session subdirectories (e.g. <uuid>/*.jsonl and <uuid>/subagents/*.jsonl)
+        const sessionDir = path.join(projPath, file.name);
+        try {
+          for (const sf of fs.readdirSync(sessionDir, { withFileTypes: true })) {
+            if (sf.isFile() && sf.name.endsWith('.jsonl')) {
+              filePaths.push(path.join(sessionDir, sf.name));
+            } else if (sf.isDirectory() && sf.name === 'subagents') {
+              try {
+                for (const af of fs.readdirSync(path.join(sessionDir, sf.name), { withFileTypes: true })) {
+                  if (af.isFile() && af.name.endsWith('.jsonl')) {
+                    filePaths.push(path.join(sessionDir, sf.name, af.name));
+                  }
+                }
+              } catch { /* skip */ }
+            }
+          }
+        } catch { /* skip */ }
+      }
     }
   }
 
@@ -784,7 +820,7 @@ async function parseProjectTranscripts(projDirPath, cutoffMs, cache = {}) {
       filePaths.push(path.join(dir, file.name));
     }
 
-    // Also check session subdirectories
+    // Also check session subdirectories and their nested subagents/ dirs
     try {
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
         if (!entry.isDirectory()) continue;
@@ -792,8 +828,18 @@ async function parseProjectTranscripts(projDirPath, cutoffMs, cache = {}) {
         let subFiles;
         try { subFiles = fs.readdirSync(subDir, { withFileTypes: true }); } catch { continue; }
         for (const sf of subFiles) {
-          if (!sf.isFile() || !sf.name.endsWith('.jsonl')) continue;
-          filePaths.push(path.join(subDir, sf.name));
+          if (sf.isFile() && sf.name.endsWith('.jsonl')) {
+            filePaths.push(path.join(subDir, sf.name));
+          } else if (sf.isDirectory() && sf.name === 'subagents') {
+            // Parse subagent transcripts (e.g. <uuid>/subagents/*.jsonl)
+            try {
+              for (const af of fs.readdirSync(path.join(subDir, sf.name), { withFileTypes: true })) {
+                if (af.isFile() && af.name.endsWith('.jsonl')) {
+                  filePaths.push(path.join(subDir, sf.name, af.name));
+                }
+              }
+            } catch { /* skip */ }
+          }
         }
       }
     } catch { /* skip */ }

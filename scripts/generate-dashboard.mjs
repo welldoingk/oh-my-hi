@@ -549,6 +549,21 @@ async function collectAllScopes(scopes, { days = 0, cache, cachePath, progress =
     scopeData[result.id] = result.data;
   }
 
+  // Normalize skill usage names: match colon-separated names to registered catalog names
+  // e.g. usage "hipocampus:compaction" → catalog "hipocampus-compaction"
+  for (const [, sd] of Object.entries(scopeData)) {
+    const catalogNames = new Set((sd.skills || []).map(s => s.name));
+    const usageSkills = sd.usage?.skills;
+    if (usageSkills) {
+      for (const entry of usageSkills) {
+        if (!catalogNames.has(entry.name)) {
+          const normalized = entry.name.replace(/:/g, '-');
+          if (catalogNames.has(normalized)) entry.name = normalized;
+        }
+      }
+    }
+  }
+
   // Backfill: project scopes always load global skills/MCP alongside their own,
   // so add global counts to project-local counts for the full startup picture.
   const gs = globalData.contextStats;
